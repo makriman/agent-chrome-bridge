@@ -10,7 +10,7 @@ The workflow is deliberately simple:
 4. You click `Arm tab` in the extension popup.
 5. Codex runs the local bridge and controls that armed tab.
 
-That gives Codex a practical browser-control surface for real logged-in sites: coordinate clicks, text/selector clicks, typing, keypresses, scrolling, navigation, screenshots, and visible DOM inspection.
+That gives Codex a practical browser-control surface for real logged-in sites: coordinate clicks, stable inspected refs, text/selector clicks, field filling, typing, keypresses, scrolling, navigation, screenshots, visible DOM inspection, queue diagnostics, and explicit command lifecycle states.
 
 ## Why This Exists
 
@@ -22,6 +22,7 @@ Codex Chrome Bridge keeps auth human-owned:
 - You explicitly arm one tab.
 - Codex controls only that armed tab through a local bridge.
 - You can stop/disarm at any time.
+- Every arm gets its own `armSessionId`, so stale commands cannot silently target yesterday's tab.
 
 No API keys go inside the extension. No cloud service receives browser data. The bridge listens only on `127.0.0.1`.
 
@@ -39,7 +40,7 @@ flowchart LR
   CLI --> Codex
 ```
 
-The extension polls the local bridge for commands. That avoids exposing a remote socket from Chrome and keeps the control path simple and inspectable.
+The extension polls the local bridge for commands. That avoids exposing a remote socket from Chrome and keeps the control path simple and inspectable. Each bridge process also has a `bridgeInstanceId`, which lets the extension re-announce the armed tab after a bridge restart.
 
 ## Install
 
@@ -75,16 +76,38 @@ Codex should read [SKILL.md](./SKILL.md), start the bridge if needed, check stat
 
 ## Command Examples
 
+Run diagnostics:
+
+```bash
+node bridge/control.mjs doctor
+```
+
 Check status:
 
 ```bash
 node bridge/control.mjs status
 ```
 
+Inspect the queue:
+
+```bash
+node bridge/control.mjs queue
+node bridge/control.mjs cancel cmd_...
+node bridge/control.mjs flush
+```
+
 Inspect visible interactive elements:
 
 ```bash
 node bridge/control.mjs inspect 120
+```
+
+`inspect` returns visible interactive elements with sanitized URLs, bounding boxes, and a `ref` for each target. Prefer refs when you can.
+
+Click by inspected ref:
+
+```bash
+node bridge/control.mjs click-ref ref_abc123
 ```
 
 Click by coordinates:
@@ -117,6 +140,12 @@ Scroll:
 node bridge/control.mjs scroll 900
 ```
 
+Fill a field by inspected ref:
+
+```bash
+node bridge/control.mjs fill-ref ref_abc123 "new value"
+```
+
 Type into the focused field:
 
 ```bash
@@ -134,6 +163,14 @@ Navigate the armed tab:
 
 ```bash
 node bridge/control.mjs nav "https://example.com/dashboard"
+```
+
+Wait for page state:
+
+```bash
+node bridge/control.mjs wait-for text "Saved"
+node bridge/control.mjs wait-for selector ".toast-success"
+node bridge/control.mjs wait-for url "/dashboard"
 ```
 
 Use browser history or reload:
@@ -156,6 +193,12 @@ Run a raw command:
 node bridge/control.mjs raw '{"type":"click","x":400,"y":300}'
 ```
 
+Stream lifecycle changes while waiting:
+
+```bash
+node bridge/control.mjs inspect 120 --jsonl
+```
+
 Stop/disarm:
 
 ```bash
@@ -174,15 +217,18 @@ Common command shapes:
 
 ```json
 { "type": "inspect", "limit": 120 }
+{ "type": "click", "ref": "ref_abc123" }
 { "type": "click", "x": 420, "y": 315 }
 { "type": "click", "text": "Continue", "exact": true }
 { "type": "click", "selector": "button.primary", "index": 0 }
 { "type": "doubleClick", "x": 420, "y": 315 }
 { "type": "move", "x": 600, "y": 400 }
 { "type": "scroll", "deltaY": 900 }
+{ "type": "fill", "ref": "ref_abc123", "text": "hello" }
 { "type": "type", "text": "hello" }
 { "type": "key", "key": "Enter" }
 { "type": "key", "key": "L", "modifiers": ["Meta"] }
+{ "type": "waitFor", "kind": "text", "value": "Ready" }
 { "type": "navigate", "url": "https://example.com" }
 { "type": "back" }
 { "type": "forward" }
@@ -194,15 +240,30 @@ Common command shapes:
 
 Results are fetched from `GET /result?id=<command-id>` with the same token.
 
+Commands move through explicit lifecycle states:
+
+- `queued`
+- `leased`
+- `running`
+- `succeeded`
+- `failed`
+- `timed_out`
+- `cancelled`
+- `stale_arm`
+
+The CLI exits non-zero for every terminal state except `succeeded`.
+
 ## Safety Model
 
 This project is intentionally powerful, so the trust boundary is explicit:
 
 - The extension only acts after you arm a tab.
 - Arming expires after 30 minutes.
+- Arming a new tab replaces the old armed tab.
 - `Stop` in the popup disarms the tab and detaches Chrome Debugger.
 - The bridge binds to `127.0.0.1`, not a public interface.
 - The command API requires a per-clone local token in `.bridge-token`.
+- `status`, `doctor`, queue inspection, commands, and results all use that token.
 - Screenshots and inspect output stay local unless the agent includes them in chat.
 - The extension controls the armed tab, not your whole browser profile.
 
@@ -210,9 +271,9 @@ Important: this tool does not replace Codex's own browser safety rules. If a com
 
 ## What The Extension Can See
 
-The content script returns visible interactive elements and their bounding boxes. It also works across iframes when Chrome permissions allow it.
+The content script returns visible interactive elements, refs, selector hints, and bounding boxes. It also works across iframes when Chrome permissions allow it.
 
-For inspection, the content script avoids returning visible values from password, email, and telephone inputs. Screenshots can still show anything visible on the page, just like the user can see it.
+For inspection, the content script strips query strings and fragments from frame URLs, and avoids returning visible values from password, email, phone, card, OTP, token, and other sensitive-looking inputs. Screenshots can still show anything visible on the page, just like the user can see it.
 
 ## Development
 
@@ -221,11 +282,7 @@ No package install is required. The bridge uses Node's built-in HTTP server and 
 Run checks:
 
 ```bash
-node --check extension/background.js
-node --check extension/content.js
-node --check extension/popup.js
-node --check bridge/server.mjs
-node --check bridge/control.mjs
+npm run check
 ```
 
 Create a zip for manual distribution:
@@ -248,14 +305,12 @@ extension/
 bridge/
   server.mjs
   control.mjs
+docs/
+  ROADMAP.md
 SKILL.md
 README.md
 ```
 
 ## Roadmap
 
-- Optional native messaging bridge for lower-latency control.
-- Richer accessibility tree output.
-- Optional full-page screenshots.
-- Higher-level helper commands for waits and target assertions.
-- MCP wrapper around the same local command protocol.
+See [docs/ROADMAP.md](./docs/ROADMAP.md) for the agent-grade roadmap: durable transport, richer inspection, accessibility and DOM refs, side panel approvals, safety policy, MCP tools, downloads, network diagnostics, and test fixtures.

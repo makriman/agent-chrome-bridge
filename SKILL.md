@@ -30,7 +30,13 @@ npm run bridge
 node bridge/control.mjs status
 ```
 
-If `armed` is missing or expired, ask the user to arm the tab again.
+6. If anything looks off, run:
+
+```bash
+node bridge/control.mjs doctor
+```
+
+If `armed` is missing or expired, ask the user to arm the tab again. If `doctor` reports token mismatch or invalid length, restart the bridge.
 
 ## Command Reference
 
@@ -38,6 +44,14 @@ Inspect visible interactive elements:
 
 ```bash
 node bridge/control.mjs inspect 120
+```
+
+Prefer `ref` values returned by inspect whenever possible.
+
+Click by ref:
+
+```bash
+node bridge/control.mjs click-ref ref_abc123
 ```
 
 Click by coordinates:
@@ -70,6 +84,12 @@ Scroll:
 node bridge/control.mjs scroll 900
 ```
 
+Fill by ref:
+
+```bash
+node bridge/control.mjs fill-ref ref_abc123 "text"
+```
+
 Type into the focused element:
 
 ```bash
@@ -87,6 +107,14 @@ Navigate:
 
 ```bash
 node bridge/control.mjs nav "https://example.com"
+```
+
+Wait for state:
+
+```bash
+node bridge/control.mjs wait-for text "Saved"
+node bridge/control.mjs wait-for selector ".toast-success"
+node bridge/control.mjs wait-for url "/dashboard"
 ```
 
 History/reload:
@@ -115,20 +143,31 @@ Stop/disarm:
 node bridge/control.mjs stop
 ```
 
+Queue diagnostics:
+
+```bash
+node bridge/control.mjs queue
+node bridge/control.mjs cancel cmd_...
+node bridge/control.mjs flush
+```
+
 ## Operating Guidance
 
 - Use `inspect` before forming text or selector commands.
-- Prefer text/selector clicks when stable; use coordinate clicks when the page is visual or canvas-like.
+- Prefer `click-ref` and `fill-ref`; use text/selector clicks when refs are unavailable; use coordinate clicks when the page is visual or canvas-like.
 - Use screenshots when visual confirmation matters.
 - Keep commands scoped to the user's task and the armed tab.
 - If an action could submit data, make a purchase, delete data, change settings, or transmit sensitive information, follow Codex browser safety rules and ask for confirmation at action time.
 - Do not reveal the local `.bridge-token` in chat.
 - Do not commit `.bridge-token`, screenshots, or generated zip files.
+- Treat every non-`succeeded` terminal state as a real failure: `failed`, `timed_out`, `cancelled`, or `stale_arm`.
 
 ## Troubleshooting
 
 - If commands time out, confirm `npm run bridge` is still running.
+- If commands time out, run `queue`; cancel or flush stale commands if needed.
 - If status says the tab is not armed, ask the user to click `Arm tab` again.
+- If commands say `stale_arm`, the user armed a newer tab; rerun `status`/`inspect` and use fresh refs.
 - If Chrome shows a debugger banner during commands, that is expected.
 - If a click by text misses, run `inspect` and use the exact visible label, `--index`, or coordinates.
 - If the extension was edited locally, reload it in `chrome://extensions` before testing.

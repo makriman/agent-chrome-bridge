@@ -20,6 +20,4 @@ document.getElementById("arm").addEventListener("click", () => send("arm"));
 document.getElementById("status").addEventListener("click", () => send("status"));
 document.getElementById("disarm").addEventListener("click", () => send("disarm"));
 
-chrome.storage.local.get("state", (saved) => {
-  if (saved && saved.state) print(saved.state);
-});
+send("status");

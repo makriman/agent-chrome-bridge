@@ -1,17 +1,32 @@
 const SOURCE = "codex-chrome-bridge";
 const BRIDGE_URL = "http://127.0.0.1:18474";
 const ARM_DURATION_MS = 30 * 60 * 1000;
+const DEFAULT_COMMAND_TIMEOUT_MS = 30000;
+const POLL_INTERVAL_MS = 500;
+const HELLO_INTERVAL_MS = 2000;
+const COMMAND_HEARTBEAT_MS = 2000;
 
 let state = {
+  extensionInstanceId: `ext_${crypto.randomUUID()}`,
   armed: null,
   debuggerTabId: null,
+  activeBridgeInstanceId: null,
+  lastBridgeHelloAt: null,
+  lastPollAt: null,
+  lastCommandAt: null,
+  runningCommand: null,
   latestCommand: null,
   latestResult: null,
   logs: []
 };
 
 let pollInFlight = false;
+let helloInFlight = false;
 let lastCommandId = "";
+
+function storage() {
+  return chrome.storage.session || chrome.storage.local;
+}
 
 function chromeCall(api, method, ...args) {
   return new Promise((resolve, reject) => {
@@ -33,36 +48,29 @@ function debuggerCall(method, target, ...args) {
   });
 }
 
+function storageGet(key) {
+  return new Promise((resolve) => storage().get(key, (saved) => resolve(saved)));
+}
+
 function storageSet(value) {
-  return new Promise((resolve) => chrome.storage.local.set(value, () => resolve()));
+  return new Promise((resolve) => storage().set(value, () => resolve()));
 }
 
-function restoreState() {
-  chrome.storage.local.get("state", (saved) => {
-    if (saved && saved.state) {
-      state = { ...state, ...saved.state, debuggerTabId: null };
-      if (state.armed && state.armed.expiresAt <= Date.now()) {
-        state.armed = null;
-        storageSet({ state });
-      }
-    }
-  });
+function sanitizeUrl(value) {
+  try {
+    const url = new URL(value);
+    return `${url.origin}${url.pathname}`;
+  } catch (_) {
+    return value || "";
+  }
 }
 
-function log(message, extra) {
-  const entry = { at: new Date().toISOString(), message, ...(extra ? { extra } : {}) };
-  state.logs.push(entry);
-  state.logs = state.logs.slice(-120);
-  storageSet({ state });
-  postEvent("log", entry).catch(() => {});
-}
-
-function publicState() {
+function sanitizedArmed() {
+  if (!state.armed) return null;
   return {
-    armed: state.armed,
-    latestCommand: state.latestCommand,
-    latestResult: summarizeResult(state.latestResult),
-    logs: state.logs.slice(-30)
+    ...state.armed,
+    url: sanitizeUrl(state.armed.url),
+    rawUrlRedacted: state.armed.url !== sanitizeUrl(state.armed.url)
   };
 }
 
@@ -78,15 +86,110 @@ function summarizeResult(result) {
   };
 }
 
+function publicState() {
+  return {
+    extensionInstanceId: state.extensionInstanceId,
+    activeBridgeInstanceId: state.activeBridgeInstanceId,
+    lastBridgeHelloAt: state.lastBridgeHelloAt,
+    lastPollAt: state.lastPollAt,
+    lastCommandAt: state.lastCommandAt,
+    armed: sanitizedArmed(),
+    runningCommand: state.runningCommand,
+    latestCommand: state.latestCommand,
+    latestResult: summarizeResult(state.latestResult),
+    logs: state.logs.slice(-30)
+  };
+}
+
+async function restoreState() {
+  const saved = await storageGet("state");
+  if (saved && saved.state) {
+    state = {
+      ...state,
+      ...saved.state,
+      extensionInstanceId: saved.state.extensionInstanceId || state.extensionInstanceId,
+      debuggerTabId: null,
+      runningCommand: null
+    };
+  }
+  if (state.armed && state.armed.expiresAt <= Date.now()) {
+    state.armed = null;
+    await storageSet({ state });
+  }
+  if (state.armed) {
+    try {
+      const tab = await chromeCall("tabs", "get", state.armed.tabId);
+      if (!tab || !/^https?:/.test(tab.url || "")) {
+        state.armed = null;
+      } else {
+        await updateArmedTabSnapshot(tab);
+      }
+    } catch (_) {
+      state.armed = null;
+    }
+    await storageSet({ state });
+  }
+}
+
+function log(message, extra) {
+  const entry = { at: new Date().toISOString(), message, ...(extra ? { extra } : {}) };
+  state.logs.push(entry);
+  state.logs = state.logs.slice(-120);
+  storageSet({ state });
+  postEvent("log", entry).catch(() => {});
+}
+
 async function postEvent(type, payload = {}) {
   try {
-    await fetch(`${BRIDGE_URL}/event`, {
+    const response = await fetch(`${BRIDGE_URL}/event`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ type, payload, state: publicState(), at: new Date().toISOString() })
+      body: JSON.stringify({
+        type,
+        payload: {
+          extensionInstanceId: state.extensionInstanceId,
+          bridgeInstanceId: state.activeBridgeInstanceId,
+          ...payload
+        },
+        state: publicState(),
+        at: new Date().toISOString()
+      })
     });
+    const bridge = await response.json().catch(() => null);
+    if (bridge && bridge.bridgeInstanceId && bridge.bridgeInstanceId !== state.activeBridgeInstanceId) {
+      state.activeBridgeInstanceId = bridge.bridgeInstanceId;
+      await storageSet({ state });
+    }
   } catch (_) {
     // The bridge is optional until a Codex session starts it.
+  }
+}
+
+async function helloBridge({ force = false } = {}) {
+  if (helloInFlight) return;
+  const lastHelloMs = state.lastBridgeHelloAt ? Date.parse(state.lastBridgeHelloAt) : 0;
+  if (!force && Date.now() - lastHelloMs < HELLO_INTERVAL_MS) return;
+  helloInFlight = true;
+  try {
+    const response = await fetch(`${BRIDGE_URL}/hello`, { cache: "no-store" });
+    if (!response.ok) return;
+    const payload = await response.json();
+    const changed = payload.bridgeInstanceId && payload.bridgeInstanceId !== state.activeBridgeInstanceId;
+    state.activeBridgeInstanceId = payload.bridgeInstanceId || state.activeBridgeInstanceId;
+    state.lastBridgeHelloAt = new Date().toISOString();
+    await storageSet({ state });
+    await postEvent("hello", {
+      bridgeInstanceId: state.activeBridgeInstanceId,
+      extensionInstanceId: state.extensionInstanceId,
+      bridgeChanged: changed
+    });
+    if (changed && state.armed) {
+      await postEvent("arm-state", { armed: sanitizedArmed() });
+    }
+  } catch (_) {
+    // Bridge may not be running.
+  } finally {
+    helloInFlight = false;
   }
 }
 
@@ -115,7 +218,11 @@ async function armActiveTab() {
   if (!/^https?:/.test(tab.url || "")) {
     throw new Error("Only http/https tabs can be armed.");
   }
+  if (state.armed && state.armed.tabId !== tab.id) {
+    await detachDebugger();
+  }
   state.armed = {
+    armSessionId: `arm_${crypto.randomUUID()}`,
     tabId: tab.id,
     windowId: tab.windowId,
     url: tab.url,
@@ -124,13 +231,16 @@ async function armActiveTab() {
     expiresAt: Date.now() + ARM_DURATION_MS
   };
   await storageSet({ state });
-  await postEvent("armed", { armed: state.armed });
+  await helloBridge({ force: true });
+  await postEvent("armed", { armed: sanitizedArmed() });
+  await postEvent("arm-state", { armed: sanitizedArmed() });
   return publicState();
 }
 
 async function disarm() {
   await detachDebugger();
   state.armed = null;
+  state.runningCommand = null;
   await storageSet({ state });
   await postEvent("disarmed", {});
   return publicState();
@@ -199,9 +309,16 @@ async function inspect(command) {
     { frameId: 0 }
   );
   return {
-    url: tab.url,
+    url: sanitizeUrl(tab.url),
     title: tab.title,
-    items: response.items || []
+    armSessionId: state.armed.armSessionId,
+    viewport: {
+      width: response.viewport ? response.viewport.width : null,
+      height: response.viewport ? response.viewport.height : null,
+      deviceScaleFactor: response.viewport ? response.viewport.deviceScaleFactor : null
+    },
+    items: response.items || [],
+    redactions: response.redactions || []
   };
 }
 
@@ -263,6 +380,17 @@ function targetFromCommand(command) {
   return null;
 }
 
+function targetSpec(command) {
+  return {
+    ref: command.ref || "",
+    text: command.text || "",
+    selector: command.selector || "",
+    role: command.role || "",
+    exact: Boolean(command.exact),
+    index: command.index || 0
+  };
+}
+
 async function click(command) {
   const tab = await getArmedTab();
   const coordinateTarget = targetFromCommand(command);
@@ -273,19 +401,13 @@ async function click(command) {
     });
     return { clicked: "coordinates", point: coordinateTarget.point };
   }
-  const target = await findTarget(tab.id, {
-    text: command.text || "",
-    selector: command.selector || "",
-    role: command.role || "",
-    exact: Boolean(command.exact),
-    index: command.index || 0
-  });
+  const target = await findTarget(tab.id, targetSpec(command));
   const point = center(target.rect);
   await mouseClick(tab.id, point, {
     button: command.button || "left",
     clickCount: command.clickCount || 1
   });
-  return { clicked: target.text, role: target.role, point, frameUrl: target.frameUrl };
+  return { clicked: target.text, role: target.role, ref: target.ref, point, frameUrl: target.frameUrl };
 }
 
 async function doubleClick(command) {
@@ -298,13 +420,7 @@ async function move(command) {
   if (Number.isFinite(command.x) && Number.isFinite(command.y)) {
     point = { x: command.x, y: command.y };
   } else {
-    const target = await findTarget(tab.id, {
-      text: command.text || "",
-      selector: command.selector || "",
-      role: command.role || "",
-      exact: Boolean(command.exact),
-      index: command.index || 0
-    });
+    const target = await findTarget(tab.id, targetSpec(command));
     point = center(target.rect);
   }
   await moveMouse(tab.id, point);
@@ -385,11 +501,28 @@ async function typeText(command) {
   return { typed: String(command.text || "").length };
 }
 
+async function fill(command) {
+  const tab = await getArmedTab();
+  if (!command.ref) throw new Error("fill requires a ref from inspect.");
+  await ensureContent(tab.id);
+  const response = await chromeCall(
+    "tabs",
+    "sendMessage",
+    tab.id,
+    { source: SOURCE, type: "setValue", spec: { ref: command.ref }, text: String(command.text || "") },
+    { frameId: 0 }
+  );
+  if (!response || !response.ok) {
+    throw new Error(response && response.error ? response.error : `Unable to fill ${command.ref}.`);
+  }
+  return { filled: command.ref, length: String(command.text || "").length };
+}
+
 async function navigate(command) {
   const tab = await getArmedTab();
   const destination = new URL(command.url, tab.url);
   await chromeCall("tabs", "update", tab.id, { url: destination.href });
-  return { navigatingTo: destination.href };
+  return { navigatingTo: sanitizeUrl(destination.href) };
 }
 
 async function reload() {
@@ -414,7 +547,7 @@ async function screenshot(command = {}) {
     format: command.format || "png",
     quality: command.quality
   });
-  return { url: tab.url, title: tab.title, dataUrl };
+  return { url: sanitizeUrl(tab.url), title: tab.title, dataUrl };
 }
 
 async function waitCommand(command) {
@@ -423,8 +556,46 @@ async function waitCommand(command) {
   return { waitedMs: ms };
 }
 
+async function waitFor(command) {
+  const tab = await getArmedTab();
+  const timeoutMs = Math.max(1, Number(command.timeoutMs || DEFAULT_COMMAND_TIMEOUT_MS));
+  const started = Date.now();
+  const kind = String(command.kind || "").toLowerCase();
+  const value = String(command.value || "");
+  while (Date.now() - started < timeoutMs) {
+    if (kind === "url") {
+      const current = await chromeCall("tabs", "get", tab.id);
+      if ((current.url || "").includes(value)) return { matched: "url", value: sanitizeUrl(current.url) };
+    } else {
+      await ensureContent(tab.id);
+      const spec = kind === "selector" ? { selector: value } : { text: value };
+      const target = await chromeCall(
+        "tabs",
+        "sendMessage",
+        tab.id,
+        { source: SOURCE, type: "find", spec },
+        { frameId: 0 }
+      ).catch(() => null);
+      if (target && target.target) return { matched: kind || "text", target: target.target };
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+  throw new Error(`Timed out waiting for ${kind || "target"} ${value}.`);
+}
+
+function assertCommandArm(command) {
+  if (command.type === "status" || command.type === "stop" || command.type === "disarm") return;
+  if (!isArmed()) throw new Error("Bridge is not armed. Click the extension icon and arm the active tab.");
+  if (command.armSessionId && state.armed && command.armSessionId !== state.armed.armSessionId) {
+    const error = new Error(`Stale arm session. Command targets ${command.armSessionId}; active is ${state.armed.armSessionId}.`);
+    error.status = "stale_arm";
+    throw error;
+  }
+}
+
 async function handleCommand(command) {
   if (!command || !command.type) throw new Error("Missing command type.");
+  assertCommandArm(command);
   if (command.type === "status") return publicState();
   if (command.type === "inspect") return inspect(command);
   if (command.type === "click") return click(command);
@@ -433,6 +604,8 @@ async function handleCommand(command) {
   if (command.type === "scroll") return scroll(command);
   if (command.type === "key" || command.type === "keypress") return keypress(command);
   if (command.type === "type") return typeText(command);
+  if (command.type === "fill") return fill(command);
+  if (command.type === "waitFor") return waitFor(command);
   if (command.type === "navigate" || command.type === "nav") return navigate(command);
   if (command.type === "reload") return reload(command);
   if (command.type === "back" || command.type === "forward") return history(command);
@@ -442,26 +615,76 @@ async function handleCommand(command) {
   throw new Error(`Unknown command type: ${command.type}`);
 }
 
+function withTimeout(promise, timeoutMs) {
+  return Promise.race([
+    promise,
+    new Promise((_, reject) => {
+      setTimeout(() => {
+        const error = new Error(`Command timed out after ${timeoutMs}ms.`);
+        error.status = "timed_out";
+        reject(error);
+      }, timeoutMs);
+    })
+  ]);
+}
+
+async function finishCommand(command, status, fields = {}) {
+  state.latestResult = {
+    id: command.id,
+    type: command.type,
+    status,
+    startedAt: state.runningCommand ? state.runningCommand.startedAt : undefined,
+    finishedAt: new Date().toISOString(),
+    ...fields
+  };
+  state.runningCommand = null;
+  await storageSet({ state });
+  await postEvent("command-result", state.latestResult);
+}
+
 async function runBridgeCommand(command) {
   state.latestCommand = command;
+  state.lastCommandAt = new Date().toISOString();
+  state.runningCommand = {
+    id: command.id,
+    type: command.type,
+    armSessionId: command.armSessionId,
+    startedAt: new Date().toISOString(),
+    timeoutMs: command.timeoutMs || DEFAULT_COMMAND_TIMEOUT_MS
+  };
   await storageSet({ state });
+  await postEvent("command-start", state.runningCommand);
+  const heartbeat = setInterval(() => {
+    postEvent("command-heartbeat", {
+      id: command.id,
+      type: command.type,
+      startedAt: state.runningCommand ? state.runningCommand.startedAt : undefined
+    }).catch(() => {});
+  }, COMMAND_HEARTBEAT_MS);
   try {
-    const result = await handleCommand(command);
-    state.latestResult = { id: command.id, ok: true, result, at: new Date().toISOString() };
-    await storageSet({ state });
-    await postEvent("command-result", state.latestResult);
+    const timeoutMs = Math.max(1, Number(command.timeoutMs || DEFAULT_COMMAND_TIMEOUT_MS));
+    const result = await withTimeout(handleCommand(command), timeoutMs);
+    clearInterval(heartbeat);
+    await finishCommand(command, "succeeded", { result });
   } catch (error) {
-    state.latestResult = { id: command.id, ok: false, error: error.message, at: new Date().toISOString() };
-    await storageSet({ state });
-    await postEvent("command-result", state.latestResult);
+    clearInterval(heartbeat);
+    await finishCommand(command, error.status || "failed", { error: error.message });
   }
 }
 
 async function pollBridge() {
-  if (pollInFlight) return;
+  if (pollInFlight || state.runningCommand) return;
   pollInFlight = true;
   try {
-    const response = await fetch(`${BRIDGE_URL}/poll`, { cache: "no-store" });
+    await helloBridge();
+    const params = new URLSearchParams({
+      extensionInstanceId: state.extensionInstanceId,
+      bridgeInstanceId: state.activeBridgeInstanceId || ""
+    });
+    if (state.armed && state.armed.armSessionId) params.set("armSessionId", state.armed.armSessionId);
+    const response = await fetch(`${BRIDGE_URL}/poll?${params.toString()}`, { cache: "no-store" });
+    state.lastPollAt = new Date().toISOString();
+    await storageSet({ state });
     if (!response.ok) return;
     const command = await response.json();
     if (command && command.id && command.id !== lastCommandId) {
@@ -495,15 +718,23 @@ chrome.runtime.onInstalled.addListener(() => {
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  restoreState();
+  restoreState().then(() => helloBridge({ force: true }));
 });
 
 chrome.tabs.onUpdated.addListener((tabId, _changeInfo, tab) => {
   if (state.armed && tabId === state.armed.tabId) {
-    updateArmedTabSnapshot(tab).catch(() => {});
+    updateArmedTabSnapshot(tab)
+      .then(() => postEvent("arm-state", { armed: sanitizedArmed() }))
+      .catch(() => {});
   }
 });
 
-restoreState();
-setInterval(pollBridge, 500);
+chrome.tabs.onRemoved.addListener((tabId) => {
+  if (state.armed && tabId === state.armed.tabId) {
+    disarm().catch(() => {});
+  }
+});
+
+restoreState().then(() => helloBridge({ force: true }));
+setInterval(pollBridge, POLL_INTERVAL_MS);
 pollBridge();

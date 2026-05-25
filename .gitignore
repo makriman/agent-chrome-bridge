@@ -1,5 +1,6 @@
 .DS_Store
 .bridge-token
+.bridge-token.meta.json
 artifacts/
 dist/
 *.zip
