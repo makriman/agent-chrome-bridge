@@ -2,6 +2,8 @@
 .bridge-token
 .bridge-token.meta.json
 artifacts/
+artifacts/workflows/
+artifacts/runs/
 dist/
 *.zip
 inp-run-*.json

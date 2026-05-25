@@ -72,7 +72,15 @@ Tell Codex something like:
 
 > Here is the repo: `makriman/codex-chrome-bridge`. Use it. I have installed the extension, signed in, and armed the tab.
 
-Codex should read [SKILL.md](./SKILL.md), start the bridge if needed, check status, inspect the tab, and then use the command bridge.
+Codex should read [SKILL.md](./SKILL.md), start the bridge if needed, run `doctor`, check status, inspect the tab, and then use either a generated workflow script or the command bridge.
+
+For multi-step tasks, Codex should prefer workflows over a long sequence of one-off shell commands. Workflows are easier to review, rerun, resume, and debug.
+
+```bash
+node bridge/run-workflow.mjs artifacts/workflows/my-task.mjs
+```
+
+See [docs/WORKFLOWS.md](./docs/WORKFLOWS.md) for the SDK, JSON plan format, approval gates, dry runs, and per-run artifacts.
 
 ## Command Examples
 
@@ -80,6 +88,14 @@ Run diagnostics:
 
 ```bash
 node bridge/control.mjs doctor
+```
+
+Run a workflow:
+
+```bash
+node bridge/run-workflow.mjs artifacts/workflows/my-task.mjs
+node bridge/run-workflow.mjs artifacts/workflows/my-task.mjs --dry-run
+node bridge/run-workflow.mjs artifacts/workflows/my-task.mjs --resume
 ```
 
 Check status:
@@ -305,8 +321,12 @@ extension/
 bridge/
   server.mjs
   control.mjs
+  sdk.mjs
+  run-workflow.mjs
 docs/
+  WORKFLOWS.md
   ROADMAP.md
+  examples/
 SKILL.md
 README.md
 ```

@@ -48,6 +48,20 @@ flowchart LR
 - Visible element refs plus `click-ref` and `fill-ref`.
 - `wait-for` helpers for text, selector, and URL.
 
+## Implemented Milestone 1: Workflow Runtime
+
+- `bridge/sdk.mjs` for generated workflow scripts.
+- `bridge/run-workflow.mjs` for JavaScript and JSON workflows.
+- Per-run directories under `artifacts/runs/`.
+- `events.jsonl`, `command-log.jsonl`, `state.json`, and `summary.md` for each run.
+- `artifacts/workflows/` convention for user-generated workflows.
+- Step IDs and `--resume` support.
+- `--dry-run` support.
+- `--approve` support for runner-level approval gates.
+- Screenshot and inspect snapshots on failed steps.
+- JSON plan ops for inspect, screenshot, click, fill, type, key, scroll, navigate, wait/assert, approval, and raw commands.
+- SDK helpers for status, inspect, screenshot, click refs/text/role/selector, fill refs, waits, assertions, and approval gates.
+
 ## Next Reliability Work
 
 - Replace HTTP polling with WebSocket transport, keeping polling as fallback.

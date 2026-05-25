@@ -38,6 +38,54 @@ node bridge/control.mjs doctor
 
 If `armed` is missing or expired, ask the user to arm the tab again. If `doctor` reports token mismatch or invalid length, restart the bridge.
 
+## Workflow-First Operation
+
+For multi-step tasks, do not drive the browser one command at a time from chat.
+
+1. Run `doctor`, `status`, and one `inspect` to understand the current page.
+2. Create a local workflow script under `artifacts/workflows/`.
+3. The script should call `bridge/sdk.mjs`, perform the full task, include waits and assertions, and stop before any sensitive final action unless the user has explicitly approved it.
+4. Run the script through the workflow runner and monitor structured output.
+5. Use `inspect`, screenshots, queue status, and command lifecycle output only to verify or debug the script.
+6. If the script fails, update the script and rerun it; avoid continuing with a long sequence of manual ad hoc clicks.
+
+Prefer reusable scripts and site adapters over raw command sequences. Leave the user with a script that can be reviewed, repeated, and improved.
+`artifacts/workflows/` and `artifacts/runs/` are ignored by git, so task-specific workflows and run traces stay local unless the user asks to publish one.
+
+Workflow runner:
+
+```bash
+node bridge/run-workflow.mjs artifacts/workflows/my-task.mjs
+node bridge/run-workflow.mjs artifacts/workflows/my-task.mjs --dry-run
+node bridge/run-workflow.mjs artifacts/workflows/my-task.mjs --resume
+node bridge/run-workflow.mjs artifacts/workflows/my-task.mjs --resume --approve
+```
+
+Minimal workflow shape:
+
+```js
+import { browser } from "../../bridge/sdk.mjs";
+
+export default async function ({ step }) {
+  const tab = await browser.currentTab();
+
+  await step("inspect", "Inspect current page", async () => {
+    return tab.inspect(120);
+  });
+
+  await step("draft", "Draft without submitting", async () => {
+    const box = await tab.findByText(/reply/i);
+    await tab.clickRef(box.ref);
+    await tab.type("Draft text");
+    await tab.assertText("Draft text");
+  });
+
+  await step("approval", "Ask before final action", async () => {
+    await tab.requireApproval("Submit drafted reply", { text: "Draft text" });
+  });
+}
+```
+
 ## Command Reference
 
 Inspect visible interactive elements:

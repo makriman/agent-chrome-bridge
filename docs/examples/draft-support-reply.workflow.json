@@ -1,0 +1,44 @@
+{
+  "name": "draft-support-reply",
+  "profile": "default",
+  "steps": [
+    {
+      "id": "inspect",
+      "op": "inspect",
+      "saveAs": "initial"
+    },
+    {
+      "id": "click-reply",
+      "op": "click",
+      "by": {
+        "text": "Reply"
+      }
+    },
+    {
+      "id": "draft",
+      "op": "type",
+      "text": "Thanks for the context. I am checking this now."
+    },
+    {
+      "id": "assert-draft",
+      "op": "assert",
+      "text": "Thanks for the context"
+    },
+    {
+      "id": "approval",
+      "op": "requireApproval",
+      "reason": "Send support reply",
+      "details": {
+        "text": "Thanks for the context. I am checking this now."
+      }
+    },
+    {
+      "id": "send",
+      "op": "click",
+      "by": {
+        "role": "button",
+        "name": "Send"
+      }
+    }
+  ]
+}
