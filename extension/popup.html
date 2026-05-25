@@ -1,0 +1,72 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Codex Chrome Bridge</title>
+    <style>
+      :root {
+        color-scheme: light;
+        font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      }
+      body {
+        width: 340px;
+        margin: 0;
+        padding: 14px;
+        background: #f8f7f3;
+        color: #202124;
+      }
+      h1 {
+        font-size: 15px;
+        margin: 0 0 10px;
+      }
+      p {
+        margin: 0 0 10px;
+        color: #4f5257;
+        line-height: 1.35;
+      }
+      .row {
+        display: flex;
+        gap: 8px;
+        margin: 10px 0;
+      }
+      button {
+        border: 1px solid #202124;
+        background: #202124;
+        color: white;
+        border-radius: 6px;
+        padding: 8px 10px;
+        cursor: pointer;
+        font-size: 13px;
+      }
+      button.secondary {
+        background: white;
+        color: #202124;
+      }
+      button.danger {
+        border-color: #b3261e;
+        background: #b3261e;
+      }
+      pre {
+        max-height: 280px;
+        overflow: auto;
+        white-space: pre-wrap;
+        background: white;
+        border: 1px solid #dadce0;
+        border-radius: 6px;
+        padding: 10px;
+        font-size: 12px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>Codex Chrome Bridge</h1>
+    <p>Arm only the active tab for 30 minutes. Codex can control that tab through the local bridge until you stop it.</p>
+    <div class="row">
+      <button id="arm">Arm tab</button>
+      <button id="status" class="secondary">Status</button>
+      <button id="disarm" class="danger">Stop</button>
+    </div>
+    <pre id="output">Ready.</pre>
+    <script src="popup.js"></script>
+  </body>
+</html>

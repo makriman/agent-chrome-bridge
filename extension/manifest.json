@@ -1,0 +1,40 @@
+{
+  "manifest_version": 3,
+  "name": "Codex Chrome Bridge",
+  "description": "Local-only, user-armed Chrome control bridge for Codex tasks.",
+  "version": "0.1.0",
+  "permissions": [
+    "activeTab",
+    "debugger",
+    "scripting",
+    "storage",
+    "tabs"
+  ],
+  "host_permissions": [
+    "http://127.0.0.1:18474/*",
+    "http://localhost:18474/*",
+    "http://*/*",
+    "https://*/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": [
+        "http://*/*",
+        "https://*/*"
+      ],
+      "js": [
+        "content.js"
+      ],
+      "all_frames": true,
+      "run_at": "document_idle"
+    }
+  ],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Codex Chrome Bridge"
+  }
+}

@@ -1,0 +1,15 @@
+{
+  "name": "codex-chrome-bridge",
+  "version": "0.1.0",
+  "type": "module",
+  "description": "Local-only Chrome extension bridge for Codex-controlled armed-tab browser automation.",
+  "license": "MIT",
+  "scripts": {
+    "bridge": "node bridge/server.mjs",
+    "status": "node bridge/control.mjs status",
+    "inspect": "node bridge/control.mjs inspect",
+    "stop": "node bridge/control.mjs stop",
+    "check": "node --check extension/background.js && node --check extension/content.js && node --check extension/popup.js && node --check bridge/server.mjs && node --check bridge/control.mjs",
+    "zip": "mkdir -p dist && cd extension && zip -r ../dist/codex-chrome-bridge-extension.zip ."
+  }
+}

@@ -1,0 +1,8 @@
+.DS_Store
+.bridge-token
+artifacts/
+dist/
+*.zip
+inp-run-*.json
+node_modules/
+npm-debug.log*
