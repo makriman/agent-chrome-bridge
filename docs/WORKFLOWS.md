@@ -22,12 +22,18 @@ Useful options:
 
 ```bash
 node bridge/run-workflow.mjs artifacts/workflows/my-task.mjs --dry-run
+node bridge/run-workflow.mjs artifacts/workflows/my-task.mjs --offline
+node bridge/run-workflow.mjs artifacts/workflows/my-task.mjs --plan
 node bridge/run-workflow.mjs artifacts/workflows/my-task.mjs --resume
 node bridge/run-workflow.mjs artifacts/workflows/my-task.mjs --approve --resume
 node bridge/run-workflow.mjs artifacts/workflows/my-task.mjs --timeout 60000
 ```
 
-`--dry-run` emits steps and synthetic command results without sending browser commands.
+`--dry-run` emits steps and synthetic command/read results without sending browser commands.
+
+`--offline` is stricter language for the same no-bridge expectation and is useful in scripts that want to be explicit.
+
+`--plan` records workflow metadata without executing steps.
 
 `--resume` skips completed step IDs from `state.json`.
 
@@ -103,6 +109,8 @@ Supported JSON ops:
 - `assert`
 - `requireApproval`
 - `raw`
+
+JSON steps can include `"optional": true` to record a skipped result instead of failing the whole workflow.
 
 ## SDK Helpers
 

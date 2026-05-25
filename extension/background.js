@@ -1,5 +1,7 @@
 const SOURCE = "codex-chrome-bridge";
 const BRIDGE_URL = "http://127.0.0.1:18474";
+const BRIDGE_VERSION = "0.1.0";
+const PROTOCOL_VERSION = 2;
 const ARM_DURATION_MS = 30 * 60 * 1000;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30000;
 const POLL_INTERVAL_MS = 500;
@@ -17,6 +19,16 @@ let state = {
   runningCommand: null,
   latestCommand: null,
   latestResult: null,
+  capabilities: {
+    inspect: true,
+    input: true,
+    screenshot: {
+      ok: null,
+      method: "cdp.Page.captureScreenshot",
+      fallback: "tabs.captureVisibleTab",
+      hint: "Screenshots use CDP first and tabs.captureVisibleTab as fallback."
+    }
+  },
   logs: []
 };
 
@@ -88,6 +100,8 @@ function summarizeResult(result) {
 
 function publicState() {
   return {
+    bridgeVersion: BRIDGE_VERSION,
+    protocolVersion: PROTOCOL_VERSION,
     extensionInstanceId: state.extensionInstanceId,
     activeBridgeInstanceId: state.activeBridgeInstanceId,
     lastBridgeHelloAt: state.lastBridgeHelloAt,
@@ -97,6 +111,7 @@ function publicState() {
     runningCommand: state.runningCommand,
     latestCommand: state.latestCommand,
     latestResult: summarizeResult(state.latestResult),
+    capabilities: state.capabilities,
     logs: state.logs.slice(-30)
   };
 }
@@ -543,11 +558,61 @@ async function history(command) {
 
 async function screenshot(command = {}) {
   const tab = await getArmedTab();
-  const dataUrl = await chromeCall("tabs", "captureVisibleTab", tab.windowId, {
-    format: command.format || "png",
-    quality: command.quality
-  });
-  return { url: sanitizeUrl(tab.url), title: tab.title, dataUrl };
+  const format = command.format === "jpeg" ? "jpeg" : "png";
+  try {
+    await sendCdp(tab.id, "Page.enable");
+    const params = {
+      format,
+      captureBeyondViewport: Boolean(command.fullPage)
+    };
+    if (format === "jpeg" && Number.isFinite(command.quality)) params.quality = command.quality;
+    const captured = await sendCdp(tab.id, "Page.captureScreenshot", params);
+    state.capabilities.screenshot = {
+      ok: true,
+      method: "cdp.Page.captureScreenshot",
+      fallback: "tabs.captureVisibleTab"
+    };
+    await storageSet({ state });
+    return {
+      url: sanitizeUrl(tab.url),
+      title: tab.title,
+      dataUrl: `data:image/${format};base64,${captured.data}`,
+      method: "cdp.Page.captureScreenshot"
+    };
+  } catch (cdpError) {
+    try {
+      const dataUrl = await chromeCall("tabs", "captureVisibleTab", tab.windowId, {
+        format,
+        quality: command.quality
+      });
+      state.capabilities.screenshot = {
+        ok: true,
+        method: "tabs.captureVisibleTab",
+        cdpError: cdpError.message
+      };
+      await storageSet({ state });
+      return {
+        url: sanitizeUrl(tab.url),
+        title: tab.title,
+        dataUrl,
+        method: "tabs.captureVisibleTab",
+        cdpError: cdpError.message
+      };
+    } catch (fallbackError) {
+      state.capabilities.screenshot = {
+        ok: false,
+        method: "cdp.Page.captureScreenshot",
+        fallback: "tabs.captureVisibleTab",
+        error: fallbackError.message,
+        cdpError: cdpError.message,
+        hint: "Reload the extension with <all_urls> host permission or use CDP Page.captureScreenshot."
+      };
+      await storageSet({ state });
+      const error = new Error(fallbackError.message);
+      error.status = "failed";
+      throw error;
+    }
+  }
 }
 
 async function waitCommand(command) {

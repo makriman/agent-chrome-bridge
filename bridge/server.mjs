@@ -3,6 +3,7 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { BRIDGE_VERSION, COMMAND_STATUSES, PROTOCOL_VERSION } from "./protocol.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
@@ -17,6 +18,8 @@ const MAX_EVENTS = 400;
 
 const state = {
   bridgeInstanceId: BRIDGE_INSTANCE_ID,
+  bridgeVersion: BRIDGE_VERSION,
+  protocolVersion: PROTOCOL_VERSION,
   startedAt: new Date().toISOString(),
   tokenMeta: null,
   pendingIds: [],
@@ -219,6 +222,35 @@ function commandResult(command) {
   };
 }
 
+function commandCounts(commands = Array.from(state.commands.values())) {
+  const counts = Object.fromEntries(COMMAND_STATUSES.map((status) => [status, 0]));
+  for (const command of commands) {
+    if (!counts[command.status]) counts[command.status] = 0;
+    counts[command.status] += 1;
+  }
+  return counts;
+}
+
+function queuePayload() {
+  expireCommands();
+  const commands = Array.from(state.commands.values());
+  const active = commands
+    .filter((command) => ["queued", "leased", "running"].includes(command.status))
+    .map(commandSummary);
+  const recentFailures = commands
+    .filter((command) => ["failed", "timed_out", "stale_arm"].includes(command.status))
+    .slice(-20)
+    .map(commandSummary);
+  return {
+    ok: true,
+    counts: commandCounts(commands),
+    active,
+    recentFailures,
+    pending: state.pendingIds.map((id) => commandSummary(state.commands.get(id))).filter(Boolean),
+    commands: commands.slice(-100).map(commandSummary)
+  };
+}
+
 function activeArmSessionId() {
   return state.latestExtensionState && state.latestExtensionState.armed
     ? state.latestExtensionState.armed.armSessionId
@@ -355,22 +387,30 @@ function statusPayload({ publicOnly = false } = {}) {
     .filter(Boolean)
     .map(commandSummary);
   const recentCommands = Array.from(state.commands.values()).slice(-40).map(commandSummary);
+  const activeCommand = Array.from(state.commands.values())
+    .reverse()
+    .find((command) => ["leased", "running"].includes(command.status));
   const base = {
     ok: true,
     bridgeInstanceId: BRIDGE_INSTANCE_ID,
+    bridgeVersion: BRIDGE_VERSION,
+    protocolVersion: PROTOCOL_VERSION,
     startedAt: state.startedAt,
     connected: state.extension.connected,
     lastPollAt: state.extension.lastPollAt,
     lastEventAt: state.extension.lastEventAt,
     activeBridgeInstanceId: state.extension.activeBridgeInstanceId,
     tokenFingerprint: state.tokenMeta.fingerprint,
-    pendingCount: pending.length
+    pendingCount: pending.length,
+    activeCommand: commandSummary(activeCommand),
+    counts: commandCounts()
   };
   if (publicOnly) return base;
   return {
     ...base,
     tokenMeta: state.tokenMeta,
     extension: state.extension,
+    capabilities: state.latestExtensionState ? state.latestExtensionState.capabilities || null : null,
     latestExtensionState: summarizeValue(state.latestExtensionState),
     pending,
     recentCommands,
@@ -427,6 +467,7 @@ async function doctorPayload() {
       tokenMetaPath: TOKEN_META_PATH,
       tokenFile,
       bridgeTokenFingerprint: state.tokenMeta.fingerprint,
+      capabilities: state.latestExtensionState ? state.latestExtensionState.capabilities || null : null,
       commandRoundTripHint: "Run `node bridge/control.mjs raw '{\"type\":\"status\"}'` to verify the extension command path."
     }
   };
@@ -450,6 +491,8 @@ const server = http.createServer(async (req, res) => {
       json(res, 200, {
         ok: true,
         bridgeInstanceId: BRIDGE_INSTANCE_ID,
+        bridgeVersion: BRIDGE_VERSION,
+        protocolVersion: PROTOCOL_VERSION,
         startedAt: state.startedAt
       });
       return;
@@ -503,11 +546,7 @@ const server = http.createServer(async (req, res) => {
 
     if (req.method === "GET" && url.pathname === "/queue") {
       if (!requireToken(req, res)) return;
-      json(res, 200, {
-        ok: true,
-        pending: state.pendingIds.map((id) => commandSummary(state.commands.get(id))).filter(Boolean),
-        commands: Array.from(state.commands.values()).slice(-100).map(commandSummary)
-      });
+      json(res, 200, queuePayload());
       return;
     }
 

@@ -61,6 +61,10 @@ flowchart LR
 - Screenshot and inspect snapshots on failed steps.
 - JSON plan ops for inspect, screenshot, click, fill, type, key, scroll, navigate, wait/assert, approval, and raw commands.
 - SDK helpers for status, inspect, screenshot, click refs/text/role/selector, fill refs, waits, assertions, and approval gates.
+- CDP-first screenshots with `tabs.captureVisibleTab` fallback.
+- Protocol/version reporting for bridge/CLI mismatch detection.
+- Queue health counts, active commands, and recent failures.
+- Shape-compatible dry-run results for inspect, screenshot, status, and waits.
 
 ## Next Reliability Work
 

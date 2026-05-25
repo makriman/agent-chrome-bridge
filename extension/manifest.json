@@ -11,10 +11,9 @@
     "tabs"
   ],
   "host_permissions": [
+    "<all_urls>",
     "http://127.0.0.1:18474/*",
-    "http://localhost:18474/*",
-    "http://*/*",
-    "https://*/*"
+    "http://localhost:18474/*"
   ],
   "background": {
     "service_worker": "background.js",

@@ -2,12 +2,13 @@ import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { BRIDGE_VERSION, PROTOCOL_VERSION, TERMINAL_STATUSES as TERMINAL_STATUS_LIST } from "./protocol.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
 const TOKEN_PATH = join(ROOT, ".bridge-token");
 const BRIDGE_URL = process.env.CODEX_CHROME_BRIDGE_URL || "http://127.0.0.1:18474";
-const TERMINAL_STATUSES = new Set(["succeeded", "failed", "timed_out", "cancelled", "stale_arm"]);
+const TERMINAL_STATUSES = new Set(TERMINAL_STATUS_LIST);
 
 export class BridgeCommandError extends Error {
   constructor(command) {
@@ -57,6 +58,62 @@ function outputPath(root, path) {
   return isAbsolute(path) ? path : resolve(root || ROOT, path);
 }
 
+function fakeStatusResult() {
+  return {
+    ok: true,
+    dryRun: true,
+    bridgeVersion: BRIDGE_VERSION,
+    protocolVersion: PROTOCOL_VERSION,
+    bridgeInstanceId: "dry-run-bridge",
+    connected: true,
+    pendingCount: 0,
+    latestExtensionState: {
+      armed: {
+        armSessionId: "dry-run-arm",
+        title: "Dry Run",
+        url: "dry-run://current-tab",
+        expiresAt: Date.now() + 30 * 60 * 1000
+      }
+    }
+  };
+}
+
+function dryRunResultFor(command, root) {
+  if (command.type === "inspect") {
+    return {
+      dryRun: true,
+      url: "dry-run://current-tab",
+      title: "Dry Run",
+      armSessionId: "dry-run-arm",
+      viewport: { width: 1280, height: 720, deviceScaleFactor: 1 },
+      items: [],
+      redactions: []
+    };
+  }
+  if (command.type === "screenshot") {
+    return {
+      dryRun: true,
+      output: outputPath(root, command.output || "artifacts/screenshot.png"),
+      mimeType: "image/png",
+      dataUrl: "[dry-run omitted]",
+      method: "dry-run"
+    };
+  }
+  if (command.type === "waitFor") {
+    return {
+      dryRun: true,
+      matched: command.kind || "target",
+      value: command.value || "",
+      target: null
+    };
+  }
+  if (command.type === "status") return fakeStatusResult();
+  return {
+    dryRun: true,
+    command
+  };
+}
+
 export class BrowserClient {
   constructor(options = {}) {
     this.configure(options);
@@ -68,6 +125,7 @@ export class BrowserClient {
     this.root = options.root || this.root || ROOT;
     this.runDir = options.runDir || this.runDir || null;
     this.dryRun = Boolean(options.dryRun ?? this.dryRun);
+    this.offline = Boolean(options.offline ?? this.offline);
     this.approve = Boolean(options.approve ?? this.approve);
     this.commandTimeoutMs = Number(options.commandTimeoutMs || this.commandTimeoutMs || 30000);
     this.eventSink = options.eventSink || this.eventSink || (() => {});
@@ -87,6 +145,9 @@ export class BrowserClient {
   }
 
   async request(path, options = {}) {
+    if (this.offline) {
+      throw new Error(`Offline dry-run mode blocked bridge request: ${path}`);
+    }
     const headers = { ...(options.headers || {}) };
     if (options.token !== false) {
       headers["x-codex-bridge-token"] = await this.token();
@@ -109,14 +170,17 @@ export class BrowserClient {
   }
 
   async status() {
+    if (this.dryRun || this.offline) return fakeStatusResult();
     return this.request("/status");
   }
 
   async doctor() {
+    if (this.dryRun || this.offline) return { ...fakeStatusResult(), doctor: { offline: this.offline, dryRun: this.dryRun } };
     return this.request("/doctor");
   }
 
   async queue() {
+    if (this.dryRun || this.offline) return { ok: true, dryRun: true, counts: {}, active: [], recentFailures: [], pending: [], commands: [] };
     return this.request("/queue");
   }
 
@@ -168,17 +232,17 @@ export class BrowserClient {
       timeoutMs,
       client: {
         name: "codex-chrome-bridge-sdk",
-        version: "0.1.0",
+        version: BRIDGE_VERSION,
         ...(command.client || {})
       }
     };
-    if (this.dryRun && command.type !== "status") {
+    if ((this.dryRun && command.type !== "status") || this.offline) {
       const dryRunCommand = {
         id: `dry_${randomUUID()}`,
         type: payload.type || payload.op,
         status: "succeeded",
         dryRun: true,
-        result: { dryRun: true, command: payload },
+        result: dryRunResultFor(payload, this.root),
         lifecycle: [{ status: "succeeded", at: nowIso(), reason: "dry-run" }]
       };
       this.emit("command_dry_run", { command: dryRunCommand });
@@ -255,6 +319,7 @@ export class BrowserTab {
   }
 
   async assertUrl(pattern) {
+    if (this.client.offline) return "dry-run://current-tab";
     const status = await this.status();
     const armed = status.latestExtensionState ? status.latestExtensionState.armed : null;
     const url = armed ? armed.url : "";
@@ -272,6 +337,15 @@ export class BrowserTab {
   async findByText(pattern, { limit = 200 } = {}) {
     const result = await this.inspect(limit);
     const item = (result.items || []).find((candidate) => matches(candidate.text, pattern));
+    if (!item && this.client.dryRun) {
+      return {
+        dryRun: true,
+        ref: "dry_ref",
+        text: patternSource(pattern),
+        role: "dry-run",
+        rect: { left: 0, top: 0, right: 100, bottom: 30, width: 100, height: 30 }
+      };
+    }
     if (!item) throw new Error(`No inspected item matched ${patternSource(pattern)}.`);
     return item;
   }

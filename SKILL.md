@@ -38,6 +38,21 @@ node bridge/control.mjs doctor
 
 If `armed` is missing or expired, ask the user to arm the tab again. If `doctor` reports token mismatch or invalid length, restart the bridge.
 
+## Runtime Version Check
+
+After pulling or updating the repo, always run:
+
+```bash
+node bridge/control.mjs doctor
+```
+
+If `doctor` returns `Not found`, a protocol mismatch, or a stale bridge warning, the bridge process is still running old code. Restart it before continuing:
+
+```bash
+lsof -ti tcp:18474 | xargs -r kill
+npm run bridge
+```
+
 ## Workflow-First Operation
 
 For multi-step tasks, do not drive the browser one command at a time from chat.
@@ -198,6 +213,20 @@ node bridge/control.mjs queue
 node bridge/control.mjs cancel cmd_...
 node bridge/control.mjs flush
 ```
+
+## Screenshot Caveat
+
+Screenshots should work through CDP first, with `tabs.captureVisibleTab` as fallback. If `screenshot` fails with a Chrome permission error, keep working with `inspect`-based verification and report the screenshot capability failure. Do not treat this as loss of browser access when `status`, `inspect`, and command round-trip still work.
+
+## Workflow Failure Debugging
+
+When a workflow fails:
+
+1. Read `artifacts/runs/<run>/summary.md`.
+2. Read the last 20 lines of `artifacts/runs/<run>/events.jsonl`.
+3. Run `node bridge/control.mjs queue`.
+4. If the failed command is `screenshot` but `inspect` works, continue with inspect-only verification and report the screenshot capability issue.
+5. Edit the workflow and rerun it with `--resume` when appropriate.
 
 ## Operating Guidance
 

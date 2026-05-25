@@ -13,7 +13,7 @@
     "flush": "node bridge/control.mjs flush",
     "stop": "node bridge/control.mjs stop",
     "workflow": "node bridge/run-workflow.mjs",
-    "check": "node --check extension/background.js && node --check extension/content.js && node --check extension/popup.js && node --check bridge/server.mjs && node --check bridge/control.mjs && node --check bridge/sdk.mjs && node --check bridge/run-workflow.mjs",
+    "check": "node --check extension/background.js && node --check extension/content.js && node --check extension/popup.js && node --check bridge/protocol.mjs && node --check bridge/server.mjs && node --check bridge/control.mjs && node --check bridge/sdk.mjs && node --check bridge/run-workflow.mjs",
     "zip": "mkdir -p dist && cd extension && zip -r ../dist/codex-chrome-bridge-extension.zip ."
   }
 }

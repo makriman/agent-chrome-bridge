@@ -17,7 +17,14 @@ export default async function ({ step, runDir }) {
     };
   });
 
-  await step("screenshot", "Capture current viewport", async () => {
-    return tab.screenshot();
+  await step("screenshot", "Capture current viewport if available", async () => {
+    try {
+      return await tab.screenshot();
+    } catch (error) {
+      return {
+        skipped: true,
+        reason: error.message
+      };
+    }
   });
 }

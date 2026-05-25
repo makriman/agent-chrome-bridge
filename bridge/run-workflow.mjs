@@ -28,6 +28,8 @@ Options:
   --run-dir <path>    Existing/new run directory.
   --resume            Resume a paused or failed run.
   --dry-run           Emit steps without sending browser commands.
+  --offline           Do not call the bridge at all; implies dry-run behavior.
+  --plan              Print workflow metadata without running steps.
   --approve           Auto-grant approval gates for this run.
   --timeout <ms>      Default command timeout, default 30000.
   --quiet             Do not mirror JSONL events to stdout.`);
@@ -172,7 +174,8 @@ async function main() {
   const client = new BrowserClient({
     runDir,
     root: ROOT,
-    dryRun: flag("--dry-run"),
+    dryRun: flag("--dry-run") || flag("--offline"),
+    offline: flag("--offline"),
     approve: flag("--approve"),
     commandTimeoutMs: Number(flagValue("--timeout", 30000)),
     eventSink: sink
@@ -180,7 +183,8 @@ async function main() {
   configureBrowser({
     runDir,
     root: ROOT,
-    dryRun: flag("--dry-run"),
+    dryRun: flag("--dry-run") || flag("--offline"),
+    offline: flag("--offline"),
     approve: flag("--approve"),
     commandTimeoutMs: Number(flagValue("--timeout", 30000)),
     eventSink: sink
@@ -215,6 +219,13 @@ async function main() {
         } catch (error) {
           await emit({ type: "step_failed", stepId: id, title, attempt, error: redactError(error) });
           if (error instanceof ApprovalRequired) throw error;
+          if (options.optional) {
+            const optionalResult = { optional: true, skipped: true, error: redactError(error) };
+            state.completedSteps[id] = { completedAt: nowIso(), result: optionalResult };
+            await saveState(statePath, state);
+            await emit({ type: "step_optional_failed", stepId: id, title, attempt, result: optionalResult });
+            return optionalResult;
+          }
           if (attempt > retries) {
             await captureFailureArtifacts(client, runDir, id);
             throw error;
@@ -241,10 +252,26 @@ async function main() {
   await emit({
     type: "workflow_started",
     workflowPath,
-    dryRun: flag("--dry-run"),
+    dryRun: flag("--dry-run") || flag("--offline"),
+    offline: flag("--offline"),
+    plan: flag("--plan"),
     resume: flag("--resume"),
     approve: flag("--approve")
   });
+
+  if (flag("--plan")) {
+    const plan = extname(workflowPath) === ".json" ? JSON.parse(await readFile(workflowPath, "utf8")) : null;
+    await emit({
+      type: "workflow_plan",
+      workflowPath,
+      steps: plan && Array.isArray(plan.steps) ? plan.steps.map((step, index) => ({ id: stepIdFrom(step, index), op: step.op })) : null,
+      note: plan ? "JSON workflow plan only; no steps executed." : "JavaScript workflows cannot be statically expanded; no steps executed."
+    });
+    state.status = "planned";
+    await saveState(statePath, state);
+    await flushSink();
+    return;
+  }
 
   try {
     if (extname(workflowPath) === ".json") {
@@ -294,20 +321,26 @@ async function main() {
 
 async function captureFailureArtifacts(client, runDir, stepId) {
   const safeStep = slug(stepId);
+  const failures = [];
+  try {
+    const inspect = await client.command({ type: "inspect", limit: 200, timeoutMs: 10000 });
+    await writeFile(join(runDir, "inspect", `failure-${safeStep}.json`), JSON.stringify(inspect.result, null, 2));
+  } catch (error) {
+    failures.push({ artifact: "inspect", error: redactError(error) });
+    // Failure artifacts should never mask the real workflow error.
+  }
   try {
     await client.command({
       type: "screenshot",
       output: join(runDir, "screenshots", `failure-${safeStep}.png`),
       timeoutMs: 10000
     });
-  } catch (_) {
+  } catch (error) {
+    failures.push({ artifact: "screenshot", error: redactError(error) });
     // Failure artifacts should never mask the real workflow error.
   }
-  try {
-    const inspect = await client.command({ type: "inspect", limit: 200, timeoutMs: 10000 });
-    await writeFile(join(runDir, "inspect", `failure-${safeStep}.json`), JSON.stringify(inspect.result, null, 2));
-  } catch (_) {
-    // Failure artifacts should never mask the real workflow error.
+  if (failures.length > 0) {
+    await writeFile(join(runDir, "failure-artifacts.json"), JSON.stringify({ stepId, failures }, null, 2)).catch(() => {});
   }
 }
 
@@ -317,7 +350,10 @@ async function runJsonPlan(plan, context) {
   for (let index = 0; index < steps.length; index += 1) {
     const step = steps[index];
     const id = stepIdFrom(step, index);
-    await context.step(id, step.name || step.op, () => runJsonStep(tab, step, context), { retries: step.retries || 0 });
+    await context.step(id, step.name || step.op, () => runJsonStep(tab, step, context), {
+      retries: step.retries || 0,
+      optional: Boolean(step.optional)
+    });
   }
 }
 

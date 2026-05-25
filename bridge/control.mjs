@@ -2,12 +2,13 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { BRIDGE_VERSION, PROTOCOL_VERSION, TERMINAL_STATUSES as TERMINAL_STATUS_LIST } from "./protocol.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
 const TOKEN_PATH = join(ROOT, ".bridge-token");
 const BRIDGE_URL = process.env.CODEX_CHROME_BRIDGE_URL || "http://127.0.0.1:18474";
-const TERMINAL_STATUSES = new Set(["succeeded", "failed", "timed_out", "cancelled", "stale_arm"]);
+const TERMINAL_STATUSES = new Set(TERMINAL_STATUS_LIST);
 
 const action = process.argv[2] || "status";
 
@@ -120,6 +121,31 @@ function printJson(value) {
   console.log(JSON.stringify(value, null, 2));
 }
 
+function assertProtocol(payload) {
+  if (!payload || payload.protocolVersion === undefined) {
+    throw new Error(
+      `The running bridge looks stale or too old for this CLI. Restart it with: lsof -ti tcp:18474 | xargs -r kill && npm run bridge`
+    );
+  }
+  if (payload.protocolVersion !== PROTOCOL_VERSION) {
+    throw new Error(
+      `The bridge process is running protocol v${payload.protocolVersion}, but this CLI expects v${PROTOCOL_VERSION}. Restart it with: lsof -ti tcp:18474 | xargs -r kill && npm run bridge`
+    );
+  }
+}
+
+async function bridgeHello() {
+  try {
+    const payload = await request("/hello", { token: false });
+    assertProtocol(payload);
+    return payload;
+  } catch (error) {
+    throw new Error(
+      `The running bridge did not answer the current protocol check (${error.message}). Restart it with: lsof -ti tcp:18474 | xargs -r kill && npm run bridge`
+    );
+  }
+}
+
 async function localTokenInfo() {
   try {
     const tokenStat = await stat(TOKEN_PATH);
@@ -143,7 +169,7 @@ function withCommonFields(command) {
     timeoutMs,
     client: {
       name: "codex-chrome-bridge-cli",
-      version: "0.1.0"
+      version: BRIDGE_VERSION
     }
   };
 }
@@ -203,6 +229,7 @@ function commandFromArgs() {
 }
 
 async function enqueue(command) {
+  await bridgeHello();
   const payload = await request("/command", {
     method: "POST",
     headers: { "content-type": "application/json" },
@@ -265,14 +292,20 @@ async function runDoctor() {
   }
   try {
     const remote = await request("/doctor");
+    assertProtocol(remote);
     printJson({ ...remote, localTokenFile: local, publicStatus });
   } catch (error) {
+    const staleHint = error.message && /Not found|stale|protocol/i.test(error.message)
+      ? "The bridge process is probably stale after a repo update. Restart it with: lsof -ti tcp:18474 | xargs -r kill && npm run bridge"
+      : "If publicStatus is healthy but token auth fails, restart the bridge so it reloads the current `.bridge-token`.";
     printJson({
       ok: false,
       error: error.message,
+      expectedBridgeVersion: BRIDGE_VERSION,
+      expectedProtocolVersion: PROTOCOL_VERSION,
       localTokenFile: local,
       publicStatus,
-      hint: "If publicStatus is healthy but token auth fails, restart the bridge so it reloads the current `.bridge-token`."
+      hint: staleHint
     });
     process.exit(1);
   }
@@ -280,14 +313,19 @@ async function runDoctor() {
 
 try {
   if (action === "status") {
-    printJson(await request("/status"));
+    const status = await request("/status");
+    assertProtocol(status);
+    printJson(status);
   } else if (action === "doctor") {
     await runDoctor();
   } else if (action === "queue") {
+    await bridgeHello();
     printJson(await request("/queue"));
   } else if (action === "flush") {
+    await bridgeHello();
     printJson(await request("/flush", { method: "POST" }));
   } else if (action === "cancel") {
+    await bridgeHello();
     printJson(
       await request("/cancel", {
         method: "POST",
@@ -296,6 +334,7 @@ try {
       })
     );
   } else if (action === "resume") {
+    await bridgeHello();
     const status = await request("/status");
     printJson({
       ok: true,

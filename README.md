@@ -1,54 +1,15 @@
 # Codex Chrome Bridge
 
-Codex Chrome Bridge is a tiny local bridge that lets Codex control a real Chrome tab you have already authenticated.
+Use your real Chrome session with Codex.
 
-The workflow is deliberately simple:
+You sign in normally, arm one Chrome tab, and Codex controls that tab through a local bridge. No cookies, passwords, or tokens are exported.
 
-1. You install the Chrome extension.
-2. You sign in to whatever website you need in Chrome.
-3. You open the page you want Codex to use.
-4. You click `Arm tab` in the extension popup.
-5. Codex runs the local bridge and controls that armed tab.
-
-That gives Codex a practical browser-control surface for real logged-in sites: coordinate clicks, stable inspected refs, text/selector clicks, field filling, typing, keypresses, scrolling, navigation, screenshots, visible DOM inspection, queue diagnostics, and explicit command lifecycle states.
-
-## Why This Exists
-
-Many browser automation tools are great for fresh browser profiles, but awkward when the useful state is in your daily Chrome profile: Shopify Admin, dashboards, internal apps, course portals, vendor consoles, and other authenticated pages.
-
-Codex Chrome Bridge keeps auth human-owned:
-
-- You authenticate normally in Chrome.
-- You explicitly arm one tab.
-- Codex controls only that armed tab through a local bridge.
-- You can stop/disarm at any time.
-- Every arm gets its own `armSessionId`, so stale commands cannot silently target yesterday's tab.
-
-No API keys go inside the extension. No cloud service receives browser data. The bridge listens only on `127.0.0.1`.
-
-## Architecture
-
-```mermaid
-flowchart LR
-  Codex["Codex chat / local shell"] --> CLI["bridge/control.mjs"]
-  CLI --> Server["Local bridge server<br/>127.0.0.1:18474"]
-  Server --> Extension["Chrome extension<br/>polls local bridge"]
-  Extension --> Tab["User-armed Chrome tab"]
-  Tab --> Extension
-  Extension --> Server
-  Server --> CLI
-  CLI --> Codex
-```
-
-The extension polls the local bridge for commands. That avoids exposing a remote socket from Chrome and keeps the control path simple and inspectable. Each bridge process also has a `bridgeInstanceId`, which lets the extension re-announce the armed tab after a bridge restart.
-
-## Install
-
-Clone the repo:
+## Quick Start
 
 ```bash
 git clone https://github.com/makriman/codex-chrome-bridge.git
 cd codex-chrome-bridge
+npm run bridge
 ```
 
 Load the extension:
@@ -56,41 +17,40 @@ Load the extension:
 1. Open `chrome://extensions`.
 2. Enable Developer mode.
 3. Click `Load unpacked`.
-4. Select the `extension` folder from this repo.
+4. Select this repo's `extension/` folder.
 
-Start the bridge:
+Then:
 
-```bash
-npm run bridge
-```
+1. Open the site in Chrome.
+2. Sign in yourself.
+3. Click the extension icon.
+4. Click `Arm tab`.
+5. Tell Codex: "Use this repo. The tab is armed."
 
-Open the site in Chrome, authenticate however you normally do, then click the extension icon and choose `Arm tab`.
+Codex should read [SKILL.md](./SKILL.md).
 
-## Use With Codex
+## What Codex Can Do
 
-Tell Codex something like:
+- Inspect the armed page.
+- Click by ref, text, selector, or coordinates.
+- Fill fields.
+- Type and press keys.
+- Scroll and navigate.
+- Take screenshots.
+- Run repeatable workflow scripts.
+- Pause before sensitive final actions.
 
-> Here is the repo: `makriman/codex-chrome-bridge`. Use it. I have installed the extension, signed in, and armed the tab.
-
-Codex should read [SKILL.md](./SKILL.md), start the bridge if needed, run `doctor`, check status, inspect the tab, and then use either a generated workflow script or the command bridge.
-
-For multi-step tasks, Codex should prefer workflows over a long sequence of one-off shell commands. Workflows are easier to review, rerun, resume, and debug.
-
-```bash
-node bridge/run-workflow.mjs artifacts/workflows/my-task.mjs
-```
-
-See [docs/WORKFLOWS.md](./docs/WORKFLOWS.md) for the SDK, JSON plan format, approval gates, dry runs, and per-run artifacts.
-
-## Command Examples
-
-Run diagnostics:
+## Everyday Commands
 
 ```bash
 node bridge/control.mjs doctor
+node bridge/control.mjs status
+node bridge/control.mjs inspect 50
+node bridge/control.mjs screenshot artifacts/current.png
+node bridge/control.mjs queue
 ```
 
-Run a workflow:
+For multi-step tasks, use workflows:
 
 ```bash
 node bridge/run-workflow.mjs artifacts/workflows/my-task.mjs
@@ -98,239 +58,39 @@ node bridge/run-workflow.mjs artifacts/workflows/my-task.mjs --dry-run
 node bridge/run-workflow.mjs artifacts/workflows/my-task.mjs --resume
 ```
 
-Check status:
+See [docs/WORKFLOWS.md](./docs/WORKFLOWS.md).
 
-```bash
-node bridge/control.mjs status
-```
+## Safety
 
-Inspect the queue:
-
-```bash
-node bridge/control.mjs queue
-node bridge/control.mjs cancel cmd_...
-node bridge/control.mjs flush
-```
-
-Inspect visible interactive elements:
-
-```bash
-node bridge/control.mjs inspect 120
-```
-
-`inspect` returns visible interactive elements with sanitized URLs, bounding boxes, and a `ref` for each target. Prefer refs when you can.
-
-Click by inspected ref:
-
-```bash
-node bridge/control.mjs click-ref ref_abc123
-```
-
-Click by coordinates:
-
-```bash
-node bridge/control.mjs click 420 315
-```
-
-Click by visible text:
-
-```bash
-node bridge/control.mjs click-text "Continue" --exact
-```
-
-Click by CSS selector:
-
-```bash
-node bridge/control.mjs click-selector "button[type='submit']"
-```
-
-Move the mouse:
-
-```bash
-node bridge/control.mjs move 600 400
-```
-
-Scroll:
-
-```bash
-node bridge/control.mjs scroll 900
-```
-
-Fill a field by inspected ref:
-
-```bash
-node bridge/control.mjs fill-ref ref_abc123 "new value"
-```
-
-Type into the focused field:
-
-```bash
-node bridge/control.mjs type "hello from Codex"
-```
-
-Press a key:
-
-```bash
-node bridge/control.mjs key Enter
-node bridge/control.mjs key L Meta
-```
-
-Navigate the armed tab:
-
-```bash
-node bridge/control.mjs nav "https://example.com/dashboard"
-```
-
-Wait for page state:
-
-```bash
-node bridge/control.mjs wait-for text "Saved"
-node bridge/control.mjs wait-for selector ".toast-success"
-node bridge/control.mjs wait-for url "/dashboard"
-```
-
-Use browser history or reload:
-
-```bash
-node bridge/control.mjs back
-node bridge/control.mjs forward
-node bridge/control.mjs reload
-```
-
-Take a screenshot:
-
-```bash
-node bridge/control.mjs screenshot artifacts/current.png
-```
-
-Run a raw command:
-
-```bash
-node bridge/control.mjs raw '{"type":"click","x":400,"y":300}'
-```
-
-Stream lifecycle changes while waiting:
-
-```bash
-node bridge/control.mjs inspect 120 --jsonl
-```
-
-Stop/disarm:
-
-```bash
-node bridge/control.mjs stop
-```
-
-## Command Protocol
-
-Commands are JSON objects queued by `POST /command` with the local token header:
-
-```http
-x-codex-bridge-token: <contents of .bridge-token>
-```
-
-Common command shapes:
-
-```json
-{ "type": "inspect", "limit": 120 }
-{ "type": "click", "ref": "ref_abc123" }
-{ "type": "click", "x": 420, "y": 315 }
-{ "type": "click", "text": "Continue", "exact": true }
-{ "type": "click", "selector": "button.primary", "index": 0 }
-{ "type": "doubleClick", "x": 420, "y": 315 }
-{ "type": "move", "x": 600, "y": 400 }
-{ "type": "scroll", "deltaY": 900 }
-{ "type": "fill", "ref": "ref_abc123", "text": "hello" }
-{ "type": "type", "text": "hello" }
-{ "type": "key", "key": "Enter" }
-{ "type": "key", "key": "L", "modifiers": ["Meta"] }
-{ "type": "waitFor", "kind": "text", "value": "Ready" }
-{ "type": "navigate", "url": "https://example.com" }
-{ "type": "back" }
-{ "type": "forward" }
-{ "type": "reload" }
-{ "type": "screenshot" }
-{ "type": "wait", "ms": 1000 }
-{ "type": "stop" }
-```
-
-Results are fetched from `GET /result?id=<command-id>` with the same token.
-
-Commands move through explicit lifecycle states:
-
-- `queued`
-- `leased`
-- `running`
-- `succeeded`
-- `failed`
-- `timed_out`
-- `cancelled`
-- `stale_arm`
-
-The CLI exits non-zero for every terminal state except `succeeded`.
-
-## Safety Model
-
-This project is intentionally powerful, so the trust boundary is explicit:
-
-- The extension only acts after you arm a tab.
+- The bridge listens on `127.0.0.1`.
+- Commands require the local `.bridge-token`.
+- The extension only acts on an armed tab.
 - Arming expires after 30 minutes.
-- Arming a new tab replaces the old armed tab.
-- `Stop` in the popup disarms the tab and detaches Chrome Debugger.
-- The bridge binds to `127.0.0.1`, not a public interface.
-- The command API requires a per-clone local token in `.bridge-token`.
-- `status`, `doctor`, queue inspection, commands, and results all use that token.
-- Screenshots and inspect output stay local unless the agent includes them in chat.
-- The extension controls the armed tab, not your whole browser profile.
-
-Important: this tool does not replace Codex's own browser safety rules. If a command would submit a form, make a purchase, delete data, change account settings, or transmit sensitive data, Codex should still ask for the needed confirmation before doing it.
-
-## What The Extension Can See
-
-The content script returns visible interactive elements, refs, selector hints, and bounding boxes. It also works across iframes when Chrome permissions allow it.
-
-For inspection, the content script strips query strings and fragments from frame URLs, and avoids returning visible values from password, email, phone, card, OTP, token, and other sensitive-looking inputs. Screenshots can still show anything visible on the page, just like the user can see it.
+- Arming a new tab replaces the old tab.
+- Raw artifacts stay local and are ignored by git.
+- Codex should ask before posting, sending, buying, deleting, submitting, or changing sensitive settings.
 
 ## Development
 
-No package install is required. The bridge uses Node's built-in HTTP server and `fetch`.
-
-Run checks:
-
 ```bash
 npm run check
-```
-
-Create a zip for manual distribution:
-
-```bash
 npm run zip
 ```
 
-The zip is written to `dist/codex-chrome-bridge-extension.zip`.
+If you pull new code while the bridge is running, restart it:
 
-## Project Layout
-
-```text
-extension/
-  manifest.json
-  background.js
-  content.js
-  popup.html
-  popup.js
-bridge/
-  server.mjs
-  control.mjs
-  sdk.mjs
-  run-workflow.mjs
-docs/
-  WORKFLOWS.md
-  ROADMAP.md
-  examples/
-SKILL.md
-README.md
+```bash
+lsof -ti tcp:18474 | xargs -r kill
+npm run bridge
 ```
 
-## Roadmap
+## Files
 
-See [docs/ROADMAP.md](./docs/ROADMAP.md) for the agent-grade roadmap: durable transport, richer inspection, accessibility and DOM refs, side panel approvals, safety policy, MCP tools, downloads, network diagnostics, and test fixtures.
+```text
+extension/        Chrome extension
+bridge/           Local bridge, CLI, SDK, workflow runner
+docs/             Workflow docs, roadmap, examples
+SKILL.md          Instructions for Codex
+```
+
+Roadmap: [docs/ROADMAP.md](./docs/ROADMAP.md)
