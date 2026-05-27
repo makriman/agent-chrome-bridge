@@ -1,96 +1,62 @@
 # Codex Chrome Bridge
 
-Use your real Chrome session with Codex.
+A local-only Chrome extension bridge for Codex-controlled armed-tab browser automation.
 
-You sign in normally, arm one Chrome tab, and Codex controls that tab through a local bridge. No cookies, passwords, or tokens are exported.
+## Mission
 
-## Quick Start
+Browser automation should be powerful without asking users to export cookies, passwords, or private sessions. This bridge lets a user sign in normally, arm one tab, and allow Codex to inspect and operate only that tab through a local control plane.
+
+## What This Repository Contains
+
+A Chrome extension plus Node bridge that lets Codex interact with a real signed-in Chrome tab through explicit local arming, token-protected commands, screenshots, inspection, and repeatable workflows.
+
+## Highlights
+
+- Arm a single Chrome tab and keep credentials inside Chrome.
+- Inspect pages, click, type, scroll, navigate, and capture screenshots.
+- Run scripted workflows with dry-run and resume support.
+- Local token protection through .bridge-token and explicit tab arming.
+
+## Tech Stack
+
+- Vanilla JavaScript Chrome extension
+- Node.js ESM bridge server
+- Local HTTP control API on 127.0.0.1
+- Workflow scripts for repeatable browser tasks
+
+## Getting Started
 
 ```bash
-git clone https://github.com/makriman/codex-chrome-bridge.git
-cd codex-chrome-bridge
+npm install
 npm run bridge
-```
-
-Load the extension:
-
-1. Open `chrome://extensions`.
-2. Enable Developer mode.
-3. Click `Load unpacked`.
-4. Select this repo's `extension/` folder.
-
-Then:
-
-1. Open the site in Chrome.
-2. Sign in yourself.
-3. Click the extension icon.
-4. Click `Arm tab`.
-5. Tell Codex: "Use this repo. The tab is armed."
-
-Codex should read [SKILL.md](./SKILL.md).
-
-## What Codex Can Do
-
-- Inspect the armed page.
-- Click by ref, text, selector, or coordinates.
-- Fill fields.
-- Type and press keys.
-- Scroll and navigate.
-- Take screenshots.
-- Run repeatable workflow scripts.
-- Pause before sensitive final actions.
-
-## Everyday Commands
-
-```bash
 node bridge/control.mjs doctor
-node bridge/control.mjs status
-node bridge/control.mjs inspect 50
-node bridge/control.mjs screenshot artifacts/current.png
-node bridge/control.mjs queue
 ```
 
-For multi-step tasks, use workflows:
-
-```bash
-node bridge/run-workflow.mjs artifacts/workflows/my-task.mjs
-node bridge/run-workflow.mjs artifacts/workflows/my-task.mjs --dry-run
-node bridge/run-workflow.mjs artifacts/workflows/my-task.mjs --resume
-```
-
-See [docs/WORKFLOWS.md](./docs/WORKFLOWS.md).
-
-## Safety
-
-- The bridge listens on `127.0.0.1`.
-- Commands require the local `.bridge-token`.
-- The extension only acts on an armed tab.
-- Arming expires after 30 minutes.
-- Arming a new tab replaces the old tab.
-- Raw artifacts stay local and are ignored by git.
-- Codex should ask before posting, sending, buying, deleting, submitting, or changing sensitive settings.
-
-## Development
+## Quality Checks
 
 ```bash
 npm run check
-npm run zip
 ```
 
-If you pull new code while the bridge is running, restart it:
+## Repository Notes
 
-```bash
-lsof -ti tcp:18474 | xargs -r kill
-npm run bridge
-```
+- Do not commit .bridge-token or artifacts containing sensitive screenshots.
+- The extension should only be loaded from a trusted local checkout.
 
-## Files
+## Contributing
 
-```text
-extension/        Chrome extension
-bridge/           Local bridge, CLI, SDK, workflow runner
-docs/             Workflow docs, roadmap, examples
-SKILL.md          Instructions for Codex
-```
+Contributions are welcome. The best contributions are specific, tested, and grounded in the product mission. Good places to help include documentation, accessibility, tests, bug reports, UI polish, data validation, and safer AI behavior.
 
-Roadmap: [docs/ROADMAP.md](./docs/ROADMAP.md)
+Read [CONTRIBUTING.md](CONTRIBUTING.md) before opening a pull request.
+
+## Security
+
+Please do not open public issues for secrets, auth bypasses, data exposure, provider key leaks, or abuse vectors. Follow [SECURITY.md](SECURITY.md).
+
+## Code of Conduct
+
+This project follows [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md). Be direct, kind, and useful.
+
+## License
+
+MIT. See [LICENSE](LICENSE).

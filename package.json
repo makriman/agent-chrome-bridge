@@ -15,5 +15,12 @@
     "workflow": "node bridge/run-workflow.mjs",
     "check": "node --check extension/background.js && node --check extension/content.js && node --check extension/popup.js && node --check bridge/protocol.mjs && node --check bridge/server.mjs && node --check bridge/control.mjs && node --check bridge/sdk.mjs && node --check bridge/run-workflow.mjs",
     "zip": "mkdir -p dist && cd extension && zip -r ../dist/codex-chrome-bridge-extension.zip ."
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/makriman/codex-chrome-bridge.git"
+  },
+  "bugs": {
+    "url": "https://github.com/makriman/codex-chrome-bridge/issues"
   }
 }
