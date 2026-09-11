@@ -12,12 +12,17 @@ Cloudflare treats hosted Chrome as a bot. **Verify you are human** and **Access 
 
 Shopify Partners is one proof of that gate, not the product. See [docs/partners-cookbook.md](docs/partners-cookbook.md).
 
+Partners-specific traps from the field run:
+
+- Home **Create your first app** is an empty-state promo, not inventory. Go `/apps`.
+- A CSV / Export click may not download. Check Downloads or screenshot the dialog.
+
 ## Sequence
 
 ```text
 ListMachines
   → Mac Shell (quote paths with spaces)
-    → cd <checkout>
+    → cd "$HOME/Agent-Chrome-Bridge"
     → npm run bridge          # if 127.0.0.1:18474 is down
     → node bridge/control.mjs doctor
     → node bridge/control.mjs status
@@ -25,9 +30,13 @@ ListMachines
     → inspect / click-ref / screenshot
 ```
 
+If ListMachines / Mac Shell returns **No registered machines were available when this turn started**, stop. Do not fall back to datacenter Chrome. Retry on the next turn once a Mac is online.
+
 ### 1. ListMachines
 
 Find the Mac that has Chrome and the checkout. Prefer the machine the user already used for this repo.
+
+If the turn starts with **No registered machines were available when this turn started**, the host path is blocked for this turn. Tell the user, and retry ListMachines on the next turn. Do not open a cloud browser or ask for cookies as a workaround.
 
 ### 2. Mac Shell
 
@@ -82,6 +91,8 @@ Read `connected` and `armed`.
 
 The user must click **Arm tab** in the Agent Chrome Bridge popup. Agents cannot arm a tab remotely. Tell the user which window and URL to arm.
 
+**One armed tab.** The bridge drives a single user-armed tab. If the task needs Partners or Dev Dashboard (Cloudflare-gated), that tab is the Mac-bridge surface. For non-Cloudflare hosts (docs, Box, generic HTTPS), use Box / CopyToBox / ordinary fetch — do not keep swapping the armed tab mid-task to chase every URL.
+
 ### 7. Inspect, click-ref, screenshot
 
 Default loop:
@@ -123,9 +134,20 @@ If screenshot fails with a Chrome permission / CDP error but `inspect` still wor
 
 Do not rename `x-codex-bridge-token` or the extension message source `codex-chrome-bridge`. Those are wire compatibility, not the product name.
 
+## Parallel surfaces
+
+| Surface | When to use |
+| --- | --- |
+| Armed Chrome tab (Mac bridge) | Partners, Dev Dashboard, or any Cloudflare-gated signed-in page |
+| Box / CopyToBox / ordinary files | Non-CF hosts, screenshots already on the Mac, CSVs in Downloads |
+| Datacenter / hosted Chrome | Never, if the page showed **Verify you are human** or **Access denied** |
+
+One tab is armed at a time. Re-arm when the user switches the target page.
+
 ## Safety
 
 - Stay on the armed tab.
 - Stop before submit / purchase / delete / permission changes unless the user approved that exact action.
 - Do not dump auth files, cookies, or token values into the chat.
+- Do not paste `.bridge-token` or any token file contents.
 - Do not introduce MCP or a remote relay as a workaround for Cloudflare.

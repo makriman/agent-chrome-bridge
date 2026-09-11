@@ -18,6 +18,10 @@ Canonical repo: [makriman/Agent-Chrome-Bridge](https://github.com/makriman/Agent
 8. **Re-arm after every bridge restart.**
 9. **`connected: false` can be warm-up.** Poll `status` once or twice before failing.
 10. **`tab.wait` is not a function.** Use `tab.sleep(ms)`, `tab.waitForText`, `tab.waitForUrl`, or `tab.waitForSelector`.
+11. **Empty-state promo ≠ inventory.** Partners Home **Create your first app** is a marketing / empty-state tile. It does not mean the org has zero apps. Open `/apps` (or the Apps list) to read inventory.
+12. **CSV export click ≠ download.** Clicking Export / CSV may open a dialog or start a download that never lands. Verify the file in Downloads, or screenshot the save/confirm dialog. Do not report “exported” from the click alone.
+13. **One armed tab.** Parallel surfaces: Mac bridge for Partners / Dev Dashboard; Box (or CopyToBox) for non-Cloudflare hosts. Do not swap the armed tab mid-task to chase every URL.
+14. **No registered machines** on ListMachines / Mac Shell means retry next turn. Do not fall back to datacenter Chrome.
 
 ## ID pattern (no secrets)
 
@@ -27,6 +31,30 @@ Dev Dashboard URL piece    →  156815189    (example)
 ```
 
 Treat any ID the user pastes as opaque. Confirm which dashboard they are on from the armed tab URL before navigating.
+
+## Empty-state vs inventory
+
+Partners Home can show **Create your first app** even when the org already has apps. That copy is a promo / empty-state, not a count of inventory.
+
+```bash
+node bridge/control.mjs screenshot "artifacts/partners-home.png"
+# CopyToBox that PNG. Home promo is not inventory — do not conclude "zero apps".
+node bridge/control.mjs inspect 120
+node bridge/control.mjs click-ref ref_for_apps_nav
+node bridge/control.mjs wait-for url "/apps"
+node bridge/control.mjs screenshot "artifacts/partners-apps.png"
+```
+
+Confirm the Apps list (or an app row) before reporting inventory. Home promo copy is not evidence.
+
+## CSV export
+
+A click on Export / Download CSV is not proof the file exists.
+
+1. Screenshot the control and any save / confirm dialog.
+2. After the click, check the Mac **Downloads** folder (or the path Chrome reports).
+3. If a dialog is still open, the user may need to confirm it — the agent cannot complete a native save sheet from inspect refs.
+4. CopyToBox the CSV only after the file is on disk.
 
 ## Suggested loop
 
@@ -51,5 +79,8 @@ Workflow shape that does not use broken APIs: `docs/examples/` Partner-grade scr
 
 - Do not export Partners cookies to a cloud browser to “bypass” Cloudflare.
 - Do not put session tokens, `.bridge-token`, or app secrets in the cookbook, skill, or chat.
+- Do not paste `.bridge-token` contents.
 - Do not call `tab.wait(...)`.
 - Do not treat a successful label click as proof the drawer opened.
+- Do not treat **Create your first app** on Home as “the org has no apps.”
+- Do not treat an Export click as a completed CSV download.

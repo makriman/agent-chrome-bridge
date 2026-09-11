@@ -50,8 +50,8 @@ If `connected` is `false`, wait a few seconds and poll `status` again (extension
 
 On Grok Bot, prefer this order. Details live in [GROK_BOT.md](GROK_BOT.md).
 
-1. `ListMachines` — find the user's Mac.
-2. Mac Shell — `cd` into the checkout (quote paths that contain spaces).
+1. `ListMachines` — find the user's Mac. If the turn says **No registered machines were available when this turn started**, retry next turn.
+2. Mac Shell — `cd "$HOME/Agent-Chrome-Bridge"` (quote paths that contain spaces).
 3. `npm run bridge` if doctor/status cannot reach `127.0.0.1:18474`.
 4. `node bridge/control.mjs doctor`
 5. `node bridge/control.mjs status`
@@ -86,6 +86,10 @@ npm run bridge
 - **CopyToBox** Mac screenshots after `screenshot` so the agent can see the PNG.
 - **Re-arm after bridge restart.**
 - **`connected: false` can be warm-up.** Poll `status` before failing the session.
+- **Empty-state promo ≠ inventory.** Partners Home **Create your first app** is not the Apps list. Go `/apps` before reporting inventory.
+- **CSV export click ≠ download.** Verify the file in Downloads or screenshot the save dialog.
+- **One armed tab.** Mac bridge for Partners / Dev Dashboard; Box for non-Cloudflare hosts. Do not swap the armed tab mid-task.
+- **No registered machines were available when this turn started** → retry ListMachines next turn. Do not use datacenter Chrome.
 
 Partners-specific cookbook: [docs/partners-cookbook.md](docs/partners-cookbook.md).
 
