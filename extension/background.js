@@ -605,7 +605,7 @@ async function screenshot(command = {}) {
         fallback: "tabs.captureVisibleTab",
         error: fallbackError.message,
         cdpError: cdpError.message,
-        hint: "Reload the extension with <all_urls> host permission or use CDP Page.captureScreenshot."
+        hint: "CDP Page.captureScreenshot failed, then tabs.captureVisibleTab failed. Focus the Chrome window, keep <all_urls> host permission, and retry. inspect can still work."
       };
       await storageSet({ state });
       const error = new Error(fallbackError.message);

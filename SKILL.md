@@ -214,7 +214,7 @@ Navigate:
 node bridge/control.mjs nav "https://example.com"
 ```
 
-Wait for state (`wait-for`, not a fictional `tab.wait`):
+Wait for state. **`tab.wait` is not a function.** Use `waitForText` / `waitForUrl` / `waitForSelector` in `bridge/sdk.mjs`, or CLI `wait-for` / `wait <ms>`:
 
 ```bash
 node bridge/control.mjs wait-for text "Saved"
@@ -222,6 +222,8 @@ node bridge/control.mjs wait-for selector ".toast-success"
 node bridge/control.mjs wait-for url "/dashboard"
 node bridge/control.mjs wait 400
 ```
+
+`wait-for url` is a substring `includes` match on the full tab URL, not a regex. `inspect` does not see static Polaris metric tiles — screenshot those first. See [docs/WORKFLOWS.md](docs/WORKFLOWS.md).
 
 History/reload:
 
@@ -260,7 +262,7 @@ node bridge/control.mjs flush
 
 ## Screenshot Caveat
 
-Screenshots try CDP `Page.captureScreenshot` first, then `tabs.captureVisibleTab`. The fallback needs the window focused and host permission. If `screenshot` fails with a Chrome permission error, keep working with `inspect` and report the screenshot capability failure. Do not treat this as loss of browser access when `status`, `inspect`, and command round-trip still work.
+Screenshots try CDP `Page.captureScreenshot` first, then `tabs.captureVisibleTab` (needs a focused window and host permission). If `screenshot` fails with a Chrome permission error, keep working with `inspect` and report the screenshot capability failure. Do not treat this as loss of browser access when `status`, `inspect`, and command round-trip still work. Quote paths that contain spaces.
 
 On Grok Bot / Mac, pull the PNG with CopyToBox after a successful screenshot.
 
