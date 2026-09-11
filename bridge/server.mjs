@@ -9,7 +9,7 @@ const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
 const TOKEN_PATH = join(ROOT, ".bridge-token");
 const TOKEN_META_PATH = join(ROOT, ".bridge-token.meta.json");
-const PORT = Number(process.env.CODEX_CHROME_BRIDGE_PORT || 18474);
+const PORT = Number(process.env.AGENT_CHROME_BRIDGE_PORT || process.env.CODEX_CHROME_BRIDGE_PORT || 18474);
 const HOST = "127.0.0.1";
 const BRIDGE_INSTANCE_ID = `br_${randomUUID()}`;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30000;
@@ -107,7 +107,7 @@ function html(res) {
 <html>
   <head>
     <meta charset="utf-8">
-    <title>Codex Chrome Bridge</title>
+    <title>Agent Chrome Bridge</title>
     <style>
       body { margin: 24px; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; color: #202124; background: #f8f7f3; }
       button { margin-right: 8px; padding: 8px 10px; border: 1px solid #222; border-radius: 6px; background: #222; color: white; cursor: pointer; }
@@ -115,8 +115,8 @@ function html(res) {
     </style>
   </head>
   <body>
-    <h1>Codex Chrome Bridge</h1>
-    <p>This local page shows public bridge liveness only. Use the CLI for token-authenticated command status.</p>
+    <h1>Agent Chrome Bridge</h1>
+    <p>Give Grok Bot and other agents your Chrome. This local page shows public bridge liveness only. Use the CLI for authenticated command status.</p>
     <button onclick="refresh()">Refresh</button>
     <pre id="out">Loading...</pre>
     <script>

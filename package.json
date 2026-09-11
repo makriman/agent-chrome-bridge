@@ -1,8 +1,9 @@
 {
   "name": "codex-chrome-bridge",
+  "displayName": "Agent Chrome Bridge",
   "version": "0.1.0",
   "type": "module",
-  "description": "Local-only Chrome extension bridge for Codex-controlled armed-tab browser automation.",
+  "description": "Give Grok Bot and other agents your Chrome. Local-only, user-armed Chrome control bridge.",
   "license": "MIT",
   "scripts": {
     "bridge": "node bridge/server.mjs",
@@ -14,7 +15,7 @@
     "stop": "node bridge/control.mjs stop",
     "workflow": "node bridge/run-workflow.mjs",
     "check": "node --check extension/background.js && node --check extension/content.js && node --check extension/popup.js && node --check bridge/protocol.mjs && node --check bridge/server.mjs && node --check bridge/control.mjs && node --check bridge/sdk.mjs && node --check bridge/run-workflow.mjs",
-    "zip": "mkdir -p dist && cd extension && zip -r ../dist/codex-chrome-bridge-extension.zip ."
+    "zip": "mkdir -p dist && cd extension && zip -r ../dist/agent-chrome-bridge-extension.zip ."
   },
   "repository": {
     "type": "git",
