@@ -1,0 +1,35 @@
+{
+  "name": "partners-read",
+  "profile": "default",
+  "steps": [
+    {
+      "id": "wait-partners-url",
+      "op": "waitFor",
+      "kind": "url",
+      "url": "partners.shopify.com",
+      "options": { "timeoutMs": 15000 }
+    },
+    {
+      "id": "screenshot-metrics",
+      "op": "screenshot",
+      "output": "artifacts/partners-metrics.png",
+      "optional": true
+    },
+    {
+      "id": "scroll",
+      "op": "scroll",
+      "deltaY": 800
+    },
+    {
+      "id": "pause",
+      "op": "sleep",
+      "ms": 400
+    },
+    {
+      "id": "inspect",
+      "op": "inspect",
+      "limit": 120,
+      "saveAs": "partners-visible"
+    }
+  ]
+}

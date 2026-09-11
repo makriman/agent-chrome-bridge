@@ -69,7 +69,7 @@ node bridge/control.mjs wait-for url "partners.shopify.com"
 node bridge/control.mjs wait-for text "Apps"
 ```
 
-Workflow shape that does not use broken APIs: `docs/examples/` Partner-grade scripts on the SDK-truth PR. Until that merges, write local scripts with `sleep` / `waitFor*` only.
+Workflow shape that does not use broken APIs: `docs/examples/partners-read.workflow.mjs` (and the JSON twin). Use `sleep` / `waitFor*` only.
 
 ## What inspect will not see
 

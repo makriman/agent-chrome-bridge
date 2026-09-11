@@ -373,6 +373,7 @@ async function runJsonStep(tab, step, context) {
   if (step.op === "scroll") return tab.scroll(step.deltaY || 700);
   if (step.op === "navigate") return tab.navigate(step.url);
   if (step.op === "waitFor") return runWaitForStep(tab, step);
+  if (step.op === "sleep" || step.op === "wait") return tab.sleep(step.ms || step.timeout || 1000, step.options || {});
   if (step.op === "assert") return runAssertStep(tab, step);
   if (step.op === "requireApproval") return tab.requireApproval(step.reason || "Continue workflow", step.details || {});
   if (step.op === "raw") {

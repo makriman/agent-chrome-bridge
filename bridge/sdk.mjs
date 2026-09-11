@@ -107,6 +107,12 @@ function dryRunResultFor(command, root) {
       target: null
     };
   }
+  if (command.type === "wait") {
+    return {
+      dryRun: true,
+      waitedMs: Number(command.ms || 0)
+    };
+  }
   if (command.type === "status") return fakeStatusResult();
   return {
     dryRun: true,
@@ -352,8 +358,45 @@ export class BrowserTab {
 
   async screenshot(output = null) {
     const target = output || (this.client.runDir ? join(this.client.runDir, "screenshots", `${Date.now()}.png`) : "artifacts/screenshot.png");
-    const command = await this.client.command({ type: "screenshot", output: target, profile: this.profile });
+    try {
+      const command = await this.client.command({ type: "screenshot", output: target, profile: this.profile });
+      return command.result;
+    } catch (error) {
+      const wrapped = new Error(
+        `Screenshot failed (${error.message}). CDP Page.captureScreenshot is tried first; tabs.captureVisibleTab is the fallback and needs the tab visible plus host permission. Continue with inspect if status/inspect still work.`
+      );
+      wrapped.cause = error;
+      wrapped.status = error.status;
+      wrapped.command = error.command;
+      throw wrapped;
+    }
+  }
+
+  async sleep(ms = 1000, options = {}) {
+    const command = await this.client.command({
+      type: "wait",
+      ms: Number(ms) || 0,
+      profile: this.profile,
+      ...options
+    });
     return command.result;
+  }
+
+  async wait() {
+    throw new Error(
+      "tab.wait() is not an SDK method. Use tab.sleep(ms), tab.waitForText(text), tab.waitForUrl(urlPart), or tab.waitForSelector(selector)."
+    );
+  }
+
+  async getVisibleText({ limit = 200 } = {}) {
+    const result = await this.inspect(limit);
+    return {
+      url: result.url,
+      title: result.title,
+      text: (result.items || []).map((item) => item.text).filter(Boolean).join("\n"),
+      itemCount: (result.items || []).length,
+      note: "inspect-only: interactive/labeled elements. Static Polaris metrics often do not appear. Prefer screenshot-first for those."
+    };
   }
 
   async clickRef(ref, options = {}) {
