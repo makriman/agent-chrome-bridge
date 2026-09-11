@@ -4,7 +4,7 @@
 
 Local-only, user-armed Chrome control. Your session stays in your browser. Agents get the tab you arm — not a datacenter Chrome that Cloudflare already blocked.
 
-Package and GitHub path remain `codex-chrome-bridge` as a compatibility alias until the repository is renamed.
+Canonical repository: [github.com/makriman/Agent-Chrome-Bridge](https://github.com/makriman/Agent-Chrome-Bridge).
 
 ## Mission
 
@@ -31,18 +31,19 @@ This tree is local-only. There is no remote relay and no MCP server here.
 
 ## Compatibility
 
-The product name is **Agent Chrome Bridge**. The install and wire names stay `codex-chrome-bridge` so existing checkouts keep working.
+The GitHub repo is **Agent-Chrome-Bridge**. Older `codex-chrome-bridge` clone URLs redirect here. Keep that old name only for env vars, wire headers, and existing local checkout folders — not as the public repo slug.
 
-| Surface | Compatibility name | Notes |
+| Surface | Name | Notes |
 | --- | --- | --- |
-| npm `name` / repo path | `codex-chrome-bridge` | Display name is Agent Chrome Bridge |
-| Extension message `source` | `codex-chrome-bridge` | Do not rename; existing installs depend on it |
+| GitHub repo | `makriman/Agent-Chrome-Bridge` | Canonical slug (casing exact) |
+| npm `name` | `codex-chrome-bridge` | Package alias only; display name is Agent Chrome Bridge |
+| Extension message `source` | `codex-chrome-bridge` | Wire compat; do not rename |
 | Auth header | `x-codex-bridge-token` | Wire header; do not rename |
 | Listen port env | `CODEX_CHROME_BRIDGE_PORT` | Optional alias: `AGENT_CHROME_BRIDGE_PORT` |
 | Bridge URL env | `CODEX_CHROME_BRIDGE_URL` | Default `http://127.0.0.1:18474` |
 | Approval env | `CODEX_CHROME_BRIDGE_APPROVE` | Workflow runner only |
 
-Checkout paths such as `~/codex-chrome-bridge` and scripts that call `CODEX_CHROME_BRIDGE_*` remain valid.
+Existing `~/codex-chrome-bridge` checkouts and `CODEX_CHROME_BRIDGE_*` scripts remain valid.
 
 ## Tech Stack
 

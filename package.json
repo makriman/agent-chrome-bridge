@@ -19,9 +19,9 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/makriman/codex-chrome-bridge.git"
+    "url": "https://github.com/makriman/Agent-Chrome-Bridge.git"
   },
   "bugs": {
-    "url": "https://github.com/makriman/codex-chrome-bridge/issues"
+    "url": "https://github.com/makriman/Agent-Chrome-Bridge/issues"
   }
 }
