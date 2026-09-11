@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
-  "name": "Codex Chrome Bridge",
-  "description": "Local-only, user-armed Chrome control bridge for Codex tasks.",
+  "name": "Agent Chrome Bridge",
+  "description": "Give Grok Bot and other agents your Chrome. Local-only, user-armed tab control.",
   "version": "0.1.0",
   "permissions": [
     "activeTab",
@@ -34,6 +34,6 @@
   ],
   "action": {
     "default_popup": "popup.html",
-    "default_title": "Codex Chrome Bridge"
+    "default_title": "Agent Chrome Bridge"
   }
 }
