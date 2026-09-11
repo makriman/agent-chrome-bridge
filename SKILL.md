@@ -1,21 +1,27 @@
 ---
-name: codex-chrome-bridge
-description: Control a user-armed Chrome tab through a local bridge and Chrome extension for authenticated browser work.
+name: agent-chrome-bridge
+description: Give Grok Bot and other agents your Chrome. Control a user-armed Chrome tab through a local loopback bridge — not datacenter Chrome.
 ---
 
-# Codex Chrome Bridge
+# Agent Chrome Bridge
 
-Use this skill when the user says they installed or wants to use `codex-chrome-bridge`, or when they need Codex to control a real authenticated Chrome tab.
+**Give Grok Bot and other agents your Chrome.**
+
+Use this skill when the user installed or wants `Agent Chrome Bridge` (repo `makriman/Agent-Chrome-Bridge`; older checkouts may still be named `codex-chrome-bridge`), or when an agent must drive a real signed-in Chrome tab that Cloudflare would block from a datacenter browser.
+
+Canonical clone: `https://github.com/makriman/Agent-Chrome-Bridge.git`
 
 ## Core Idea
 
-The user authenticates in normal Chrome, opens the target page, then clicks `Arm tab` in the extension popup. Codex controls that armed tab through the local bridge at `127.0.0.1:18474`.
+Cloud Chrome ≠ user Chrome. Hosted / CI / datacenter browsers hit **Verify you are human** and **Access denied**. This bridge does not export cookies and does not stand up a remote relay. The user signs in with normal Chrome, opens the target page, clicks **Arm tab**, and the agent controls only that tab on `127.0.0.1`.
 
-Do not ask for passwords, cookies, tokens, or exported browser data. The whole point is that auth stays in the user's Chrome profile and the user explicitly arms one tab.
+Do not ask for passwords, cookies, tokens, or exported browser data.
+
+There is no MCP server in this repository. Drive the bridge with Mac Shell + `bridge/control.mjs` / `bridge/sdk.mjs`.
 
 ## Setup Checklist
 
-1. Confirm the repo is available locally.
+1. Confirm a local checkout exists (`Agent-Chrome-Bridge` or an older `codex-chrome-bridge` folder).
 2. Start the bridge if it is not already running:
 
 ```bash
@@ -23,7 +29,7 @@ npm run bridge
 ```
 
 3. Ask the user to load `extension/` in `chrome://extensions` if they have not installed it yet.
-4. Ask the user to open/authenticate the target site in Chrome and click `Arm tab`.
+4. Ask the user to open/authenticate the target site in Chrome and click **Arm tab**.
 5. Check bridge state:
 
 ```bash
@@ -36,7 +42,23 @@ node bridge/control.mjs status
 node bridge/control.mjs doctor
 ```
 
-If `armed` is missing or expired, ask the user to arm the tab again. If `doctor` reports token mismatch or invalid length, restart the bridge.
+If `armed` is missing or expired, ask the user to arm the tab again. After a bridge restart, **re-arm** — do not assume the previous arm survived.
+
+If `connected` is `false`, wait a few seconds and poll `status` again (extension hello warm-up). Do not declare the install dead on the first false.
+
+## Grok Bot Host Path
+
+On Grok Bot, prefer this order. Details live in [GROK_BOT.md](GROK_BOT.md).
+
+1. `ListMachines` — find the user's Mac. If the turn says **No registered machines were available when this turn started**, retry next turn.
+2. Mac Shell — `cd "$HOME/Agent-Chrome-Bridge"` (quote paths that contain spaces).
+3. `npm run bridge` if doctor/status cannot reach `127.0.0.1:18474`.
+4. `node bridge/control.mjs doctor`
+5. `node bridge/control.mjs status`
+6. Ask the user to **Arm tab** if needed.
+7. `inspect` / `click-ref` / `screenshot` (screenshot-first for Polaris static metrics).
+
+Optional port alias: `AGENT_CHROME_BRIDGE_PORT` (same as `CODEX_CHROME_BRIDGE_PORT`).
 
 ## Runtime Version Check
 
@@ -46,20 +68,38 @@ After pulling or updating the repo, always run:
 node bridge/control.mjs doctor
 ```
 
-If `doctor` returns `Not found`, a protocol mismatch, or a stale bridge warning, the bridge process is still running old code. Restart it before continuing:
+If `doctor` returns `Not found`, a protocol mismatch, or a stale bridge warning, the bridge process is still running old code. Restart it, then ask the user to re-arm:
 
 ```bash
 lsof -ti tcp:18474 | xargs -r kill
 npm run bridge
 ```
 
+## Hard Callouts (2026-09-10 field run)
+
+- **`tab.wait` is not a function.** Use `tab.sleep(ms)`, `tab.waitForText`, `tab.waitForUrl`, or `tab.waitForSelector`. CLI equivalent: `wait-for text|url|selector` or `wait <ms>`.
+- **Org ID ≠ Dev Dashboard ID.** Example pattern only: Partners org `4150194` vs Dev Dashboard `156815189`. Do not mix them in URLs.
+- **Screenshot-first for Polaris metrics.** `inspect` returns interactives, not static metric tiles.
+- **Scroll before inspect** so offscreen controls receive refs.
+- **Prefer `click-ref`.** A visible label is not the drawer or panel it names.
+- **Quote paths with spaces** in Mac Shell (`"/Users/You/Projects/Agent Chrome Bridge"`).
+- **CopyToBox** Mac screenshots after `screenshot` so the agent can see the PNG.
+- **Re-arm after bridge restart.**
+- **`connected: false` can be warm-up.** Poll `status` before failing the session.
+- **Empty-state promo ≠ inventory.** Partners Home **Create your first app** is not the Apps list. Go `/apps` before reporting inventory.
+- **CSV export click ≠ download.** Verify the file in Downloads or screenshot the save dialog.
+- **One armed tab.** Mac bridge for Partners / Dev Dashboard; Box for non-Cloudflare hosts. Do not swap the armed tab mid-task.
+- **No registered machines were available when this turn started** → retry ListMachines next turn. Do not use datacenter Chrome.
+
+Partners-specific cookbook: [docs/partners-cookbook.md](docs/partners-cookbook.md).
+
 ## Workflow-First Operation
 
 For multi-step tasks, do not drive the browser one command at a time from chat.
 
-1. Run `doctor`, `status`, and one `inspect` to understand the current page.
+1. Run `doctor`, `status`, and one `inspect` (after a screenshot when the page is metric-heavy).
 2. Create a local workflow script under `artifacts/workflows/`.
-3. The script should call `bridge/sdk.mjs`, perform the full task, include waits and assertions, and stop before any sensitive final action unless the user has explicitly approved it.
+3. The script should call `bridge/sdk.mjs`, perform the full task, include `sleep` / `waitFor*` assertions, and stop before any sensitive final action unless the user has explicitly approved it.
 4. Run the script through the workflow runner and monitor structured output.
 5. Use `inspect`, screenshots, queue status, and command lifecycle output only to verify or debug the script.
 6. If the script fails, update the script and rerun it; avoid continuing with a long sequence of manual ad hoc clicks.
@@ -100,6 +140,8 @@ export default async function ({ step }) {
   });
 }
 ```
+
+There is no `tab.wait`. See [docs/WORKFLOWS.md](docs/WORKFLOWS.md) for the real wait APIs.
 
 ## Command Reference
 
@@ -172,12 +214,13 @@ Navigate:
 node bridge/control.mjs nav "https://example.com"
 ```
 
-Wait for state:
+Wait for state (`wait-for`, not a fictional `tab.wait`):
 
 ```bash
 node bridge/control.mjs wait-for text "Saved"
 node bridge/control.mjs wait-for selector ".toast-success"
 node bridge/control.mjs wait-for url "/dashboard"
+node bridge/control.mjs wait 400
 ```
 
 History/reload:
@@ -188,10 +231,11 @@ node bridge/control.mjs forward
 node bridge/control.mjs reload
 ```
 
-Screenshot:
+Screenshot (quote the path if it contains spaces):
 
 ```bash
 node bridge/control.mjs screenshot artifacts/current.png
+node bridge/control.mjs screenshot "artifacts/Partner Home.png"
 ```
 
 Raw JSON:
@@ -216,7 +260,9 @@ node bridge/control.mjs flush
 
 ## Screenshot Caveat
 
-Screenshots should work through CDP first, with `tabs.captureVisibleTab` as fallback. If `screenshot` fails with a Chrome permission error, keep working with `inspect`-based verification and report the screenshot capability failure. Do not treat this as loss of browser access when `status`, `inspect`, and command round-trip still work.
+Screenshots try CDP `Page.captureScreenshot` first, then `tabs.captureVisibleTab`. The fallback needs the window focused and host permission. If `screenshot` fails with a Chrome permission error, keep working with `inspect` and report the screenshot capability failure. Do not treat this as loss of browser access when `status`, `inspect`, and command round-trip still work.
+
+On Grok Bot / Mac, pull the PNG with CopyToBox after a successful screenshot.
 
 ## Workflow Failure Debugging
 
@@ -230,21 +276,20 @@ When a workflow fails:
 
 ## Operating Guidance
 
-- Use `inspect` before forming text or selector commands.
+- Use `inspect` before forming text or selector commands. Scroll first if the control may be below the fold.
 - Prefer `click-ref` and `fill-ref`; use text/selector clicks when refs are unavailable; use coordinate clicks when the page is visual or canvas-like.
-- Use screenshots when visual confirmation matters.
+- Use screenshots when visual confirmation matters, especially static Polaris copy.
 - Keep commands scoped to the user's task and the armed tab.
-- If an action could submit data, make a purchase, delete data, change settings, or transmit sensitive information, follow Codex browser safety rules and ask for confirmation at action time.
-- Do not reveal the local `.bridge-token` in chat.
-- Do not commit `.bridge-token`, screenshots, or generated zip files.
+- If an action could submit data, make a purchase, delete data, change settings, or transmit sensitive information, ask for confirmation at action time.
+- Do not print, commit, or paste local auth files, screenshots of secrets, or generated zip files.
 - Treat every non-`succeeded` terminal state as a real failure: `failed`, `timed_out`, `cancelled`, or `stale_arm`.
 
 ## Troubleshooting
 
 - If commands time out, confirm `npm run bridge` is still running.
 - If commands time out, run `queue`; cancel or flush stale commands if needed.
-- If status says the tab is not armed, ask the user to click `Arm tab` again.
+- If status says the tab is not armed, ask the user to click **Arm tab** again.
 - If commands say `stale_arm`, the user armed a newer tab; rerun `status`/`inspect` and use fresh refs.
 - If Chrome shows a debugger banner during commands, that is expected.
-- If a click by text misses, run `inspect` and use the exact visible label, `--index`, or coordinates.
+- If a click by text misses, run `inspect` and use the exact visible label, `--index`, or a ref. Remember: label ≠ drawer.
 - If the extension was edited locally, reload it in `chrome://extensions` before testing.
