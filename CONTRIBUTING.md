@@ -1,4 +1,4 @@
-# Contributing to Codex Chrome Bridge
+# Contributing to Agent Chrome Bridge
 
 Thank you for wanting to help.
 
