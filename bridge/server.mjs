@@ -5,6 +5,7 @@ import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BRIDGE_VERSION, COMMAND_STATUSES, PROTOCOL_VERSION, TERMINAL_STATUSES } from "./protocol.mjs";
+import { pairedSessionHeaders, sessionProofHex, validProofNonce } from "../extension/extension-credential.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
@@ -106,11 +107,12 @@ async function loadSecretFile(filePath, metaPath) {
   return { token, meta };
 }
 
-function json(res, statusCode, payload) {
+function json(res, statusCode, payload, extraHeaders = {}) {
   res.writeHead(statusCode, {
     "content-type": "application/json; charset=utf-8",
     "cache-control": "no-store",
-    "x-content-type-options": "nosniff"
+    "x-content-type-options": "nosniff",
+    ...extraHeaders
   });
   res.end(JSON.stringify(payload, null, 2));
 }
@@ -438,7 +440,10 @@ export async function startBridge(options = {}) {
       activeCommand: commandSummary(activeCommand),
       counts: commandCounts()
     };
-    if (publicOnly) return base;
+    if (publicOnly) {
+      const { tokenFingerprint, activeCommand, ...liveness } = base;
+      return liveness;
+    }
     return {
       ...base,
       extensionPaired: Boolean(state.pairedExtensionInstanceId),
@@ -576,7 +581,15 @@ export async function startBridge(options = {}) {
         extensionSession: {
           paired: Boolean(state.pairedExtensionInstanceId),
           extensionInstanceId: state.pairedExtensionInstanceId,
-          fingerprint: state.extensionTokenMeta.fingerprint || null
+          fingerprint: state.extensionTokenMeta.fingerprint || null,
+          header: "x-codex-bridge-extension-token",
+          storage: "chrome.storage.session",
+          pairCommand: "node bridge/control.mjs pair"
+        },
+        listen: {
+          host: HOST,
+          port: server.address() && typeof server.address() === "object" ? server.address().port : port,
+          pinned: HOST === "127.0.0.1" && (server.address() && server.address().port) === 18474
         },
         commandRoundTripHint: state.pairedExtensionInstanceId
           ? "Run `node bridge/control.mjs raw '{\"type\":\"status\"}'` to verify the extension command path."
@@ -668,7 +681,24 @@ export async function startBridge(options = {}) {
           bridgeInstanceId,
           bridgeVersion: BRIDGE_VERSION,
           protocolVersion: PROTOCOL_VERSION,
-          startedAt: state.startedAt
+          startedAt: state.startedAt,
+          tokenFingerprint: state.tokenMeta.fingerprint
+        });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/session-proof") {
+        const nonce = (url.searchParams.get("nonce") || "").trim().toLowerCase();
+        if (!validProofNonce(nonce)) {
+          json(res, 400, { ok: false, error: "Nonce must be 32-128 hex characters." });
+          return;
+        }
+        json(res, 200, {
+          ok: true,
+          protocolVersion: PROTOCOL_VERSION,
+          bridgeInstanceId,
+          tokenFingerprint: state.tokenMeta.fingerprint,
+          proof: await sessionProofHex(extensionToken, nonce)
         });
         return;
       }
@@ -704,6 +734,7 @@ export async function startBridge(options = {}) {
           ok: true,
           extensionToken,
           bridgeInstanceId,
+          operatorFingerprint: state.tokenMeta.fingerprint,
           expiresAt: null
         });
         return;
@@ -716,7 +747,7 @@ export async function startBridge(options = {}) {
           return;
         }
         const command = leaseNextCommand(url);
-        json(res, 200, command || {});
+        json(res, 200, command || {}, pairedSessionHeaders(PROTOCOL_VERSION, bridgeInstanceId));
         return;
       }
 
@@ -758,7 +789,7 @@ export async function startBridge(options = {}) {
           error: result.error,
           leaseExpiresAt: result.leaseExpiresAt,
           deadlineAt: result.deadlineAt
-        });
+        }, pairedSessionHeaders(PROTOCOL_VERSION, bridgeInstanceId));
         return;
       }
 

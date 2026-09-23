@@ -74,7 +74,7 @@
   </head>
   <body>
     <h1>Agent Chrome Bridge</h1>
-    <p>Give Grok Bot and other agents your Chrome. Arm only the active tab for 30 minutes. The local bridge can control that tab until you stop it.</p>
+    <p>Give Grok Bot and other agents your Chrome. Pair this browser session, then arm one tab for 30 minutes. The extension token stays in session storage and is cleared when you reload the extension — run <code>node bridge/control.mjs pair</code> again after a reload. <code>doctor</code> must match this checkout before you arm.</p>
     <label for="pair-code">Pairing code</label>
     <input id="pair-code" autocomplete="off" spellcheck="false" placeholder="Paste the code from control.mjs pair">
     <div class="row">

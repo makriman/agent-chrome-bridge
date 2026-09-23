@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { assessDoctor, bridgeUrlProblem } from "./doctor-report.mjs";
 import { BRIDGE_VERSION, PROTOCOL_VERSION, TERMINAL_STATUSES as TERMINAL_STATUS_LIST } from "./protocol.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -84,13 +85,16 @@ async function token() {
   let value = "";
   try {
     value = (await readFile(TOKEN_PATH, "utf8")).trim();
-  } catch (_) {
-    await mkdir(ROOT, { recursive: true });
-    await writeFile(TOKEN_PATH, "", { mode: 0o600 });
+  } catch (error) {
+    if (error && error.code && error.code !== "ENOENT") {
+      throw new Error(
+        `Cannot read ${TOKEN_PATH} (${error.code}). This command does not replace that file. Fix permissions, or restart \`npm run bridge\` from this checkout.`
+      );
+    }
   }
   if (value.length < 32) {
     throw new Error(
-      "Bridge token is missing or invalid. Start/restart the bridge with `npm run bridge` so it can repair `.bridge-token`."
+      "Bridge token is missing or invalid. Start/restart the bridge with `npm run bridge` so it can repair `.bridge-token`. This command does not write that file."
     );
   }
   return value;
@@ -283,33 +287,74 @@ async function runCommand() {
   if (result.status !== "succeeded") process.exit(1);
 }
 
+function isTransportFailure(error) {
+  return Boolean(error) && !error.status;
+}
+
 async function runDoctor() {
   const local = await localTokenInfo();
-  let publicStatus = null;
-  try {
-    publicStatus = await request("/public-status", { token: false });
-  } catch (error) {
-    publicStatus = { ok: false, error: error.message };
-  }
-  try {
-    const remote = await request("/doctor");
-    assertProtocol(remote);
-    printJson({ ...remote, localTokenFile: local, publicStatus });
-  } catch (error) {
-    const staleHint = error.message && /Not found|stale|protocol/i.test(error.message)
-      ? "The bridge process is probably stale after a repo update. Restart it with: lsof -ti tcp:18474 | xargs -r kill && npm run bridge"
-      : "If publicStatus is healthy but token auth fails, restart the bridge so it reloads the current `.bridge-token`.";
+  const urlProblem = bridgeUrlProblem(BRIDGE_URL);
+  if (urlProblem) {
+    const assessment = assessDoctor({
+      bridgeUrl: BRIDGE_URL,
+      expectedProtocolVersion: PROTOCOL_VERSION,
+      localTokenFile: local
+    });
     printJson({
       ok: false,
-      error: error.message,
+      failures: assessment.failures,
       expectedBridgeVersion: BRIDGE_VERSION,
       expectedProtocolVersion: PROTOCOL_VERSION,
+      bridgeUrl: BRIDGE_URL,
       localTokenFile: local,
-      publicStatus,
-      hint: staleHint
+      hint: assessment.failures.map((failure) => failure.hint).join(" ")
     });
     process.exit(1);
   }
+
+  let publicStatus = null;
+  let publicFailure = null;
+  try {
+    publicStatus = await request("/public-status", { token: false });
+  } catch (error) {
+    publicFailure = error;
+    publicStatus = error.payload || { ok: false, error: error.message };
+  }
+
+  let remote = null;
+  let remoteFailure = null;
+  try {
+    remote = await request("/doctor");
+  } catch (error) {
+    remoteFailure = error;
+  }
+
+  const transportError = isTransportFailure(publicFailure) || isTransportFailure(remoteFailure)
+    ? (publicFailure || remoteFailure).message
+    : null;
+  const assessment = assessDoctor({
+    bridgeUrl: BRIDGE_URL,
+    expectedProtocolVersion: PROTOCOL_VERSION,
+    localTokenFile: local,
+    publicStatus,
+    remote,
+    transportError
+  });
+  printJson({
+    ...(remote || {}),
+    ok: assessment.ok,
+    failures: assessment.failures,
+    expectedBridgeVersion: BRIDGE_VERSION,
+    expectedProtocolVersion: PROTOCOL_VERSION,
+    bridgeUrl: BRIDGE_URL,
+    localTokenFile: local,
+    publicStatus,
+    error: assessment.ok ? undefined : (remoteFailure && remoteFailure.message) || (publicFailure && publicFailure.message) || undefined,
+    hint: assessment.ok
+      ? "Checkout token matches the live listener and the extension session is paired."
+      : assessment.failures.map((failure) => failure.hint).join(" ")
+  });
+  if (!assessment.ok) process.exit(1);
 }
 
 try {
@@ -331,8 +376,11 @@ try {
     console.log(started.ticket);
     console.log("");
     console.log("Paste that code into the Agent Chrome Bridge popup.");
-    console.log("Or open this page in Chrome and click Pair from tab:");
+    console.log("Or open this page and click Pair from tab (http://127.0.0.1:18474 only):");
     console.log(pairUrl);
+    console.log("");
+    console.log("The extension stores the session token in chrome.storage.session, not local storage.");
+    console.log("Reload the unpacked extension and pair again. Do not paste the code into chat.");
   } else if (action === "queue") {
     await bridgeHello();
     printJson(await request("/queue"));
