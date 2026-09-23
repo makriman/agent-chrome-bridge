@@ -1,6 +1,8 @@
 .DS_Store
 .bridge-token
 .bridge-token.meta.json
+.bridge-extension-session
+.bridge-extension-session.meta.json
 artifacts/
 artifacts/workflows/
 artifacts/runs/

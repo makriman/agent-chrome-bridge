@@ -26,6 +26,12 @@ If you are unsure whether something is security-sensitive, report it privately f
 - Admin route bypasses.
 - Production data leaks.
 
+## Local Control Plane
+
+The bridge listens on `127.0.0.1` only. CLI routes use `x-codex-bridge-token`. `/poll` and `/event` do not accept that operator token. They accept `x-codex-bridge-extension-token` only after `node bridge/control.mjs pair` binds one extension instance. The pairing code is single-use, and the extension session file is gitignored.
+
+The content script is injected into the armed tab when a command needs the DOM. It does not accept `window.postMessage` from the page. Frame inspect, find, and fill go through `chrome.tabs.sendMessage` from this extension.
+
 ## Secrets and Data
 
 - Never commit env files, provider keys, tokens, database dumps, or production user data.

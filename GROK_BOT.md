@@ -25,6 +25,7 @@ ListMachines
     → cd "$HOME/Agent-Chrome-Bridge"
     → npm run bridge          # if 127.0.0.1:18474 is down
     → node bridge/control.mjs doctor
+    → node bridge/control.mjs pair   # user pastes the code; once per extension session
     → node bridge/control.mjs status
     → user clicks Arm tab     # required after every bridge restart
     → inspect / click-ref / screenshot
@@ -73,7 +74,9 @@ AGENT_CHROME_BRIDGE_PORT=18474 npm run bridge
 node bridge/control.mjs doctor
 ```
 
-If doctor cannot connect, the bridge is not up or is bound to another port. If doctor reports a stale protocol or missing process, kill `18474` and start `npm run bridge` again, then **re-arm**.
+If doctor cannot connect, the bridge is not up or is bound to another port. If doctor reports a stale protocol or missing process, kill `18474` and start `npm run bridge` again, then **pair** and **re-arm**.
+
+If `doctor.extensionSession.paired` is false, run `node bridge/control.mjs pair` and have the user paste the code into the popup. Do not print `.bridge-token` or `.bridge-extension-session`. The pairing code is a one-time localhost secret; do not paste it into chat.
 
 ### 5. Status
 

@@ -28,6 +28,20 @@
         display: flex;
         gap: 8px;
         margin: 10px 0;
+        flex-wrap: wrap;
+      }
+      label {
+        display: block;
+        font-size: 12px;
+        margin-bottom: 4px;
+      }
+      input {
+        width: 100%;
+        box-sizing: border-box;
+        border: 1px solid #dadce0;
+        border-radius: 6px;
+        padding: 8px;
+        font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
       }
       button {
         border: 1px solid #202124;
@@ -61,6 +75,12 @@
   <body>
     <h1>Agent Chrome Bridge</h1>
     <p>Give Grok Bot and other agents your Chrome. Arm only the active tab for 30 minutes. The local bridge can control that tab until you stop it.</p>
+    <label for="pair-code">Pairing code</label>
+    <input id="pair-code" autocomplete="off" spellcheck="false" placeholder="Paste the code from control.mjs pair">
+    <div class="row">
+      <button id="pair">Pair</button>
+      <button id="pair-tab" class="secondary">Pair from tab</button>
+    </div>
     <div class="row">
       <button id="arm">Arm tab</button>
       <button id="status" class="secondary">Status</button>

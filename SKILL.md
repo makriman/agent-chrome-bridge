@@ -29,14 +29,22 @@ npm run bridge
 ```
 
 3. Ask the user to load `extension/` in `chrome://extensions` if they have not installed it yet.
-4. Ask the user to open/authenticate the target site in Chrome and click **Arm tab**.
-5. Check bridge state:
+4. Pair this extension to the running bridge once per browser session (and again after the bridge session file is regenerated):
+
+```bash
+node bridge/control.mjs pair
+```
+
+The user pastes the code into the popup, or opens the printed localhost `/pair#…` page and clicks **Pair from tab**. Do not read `.bridge-token` or `.bridge-extension-session` aloud or into chat.
+
+5. Ask the user to open/authenticate the target site in Chrome and click **Arm tab**.
+6. Check bridge state:
 
 ```bash
 node bridge/control.mjs status
 ```
 
-6. If anything looks off, run:
+7. If anything looks off, run:
 
 ```bash
 node bridge/control.mjs doctor
@@ -44,7 +52,7 @@ node bridge/control.mjs doctor
 
 If `armed` is missing or expired, ask the user to arm the tab again. After a bridge restart, **re-arm** — do not assume the previous arm survived.
 
-If `connected` is `false`, wait a few seconds and poll `status` again (extension hello warm-up). Do not declare the install dead on the first false.
+If `connected` is `false`, check `extensionPaired` on `status`. An unpaired extension never polls. After pairing, wait a few seconds and poll `status` again (extension hello warm-up). Do not declare the install dead on the first false.
 
 ## Grok Bot Host Path
 
@@ -54,9 +62,10 @@ On Grok Bot, prefer this order. Details live in [GROK_BOT.md](GROK_BOT.md).
 2. Mac Shell — `cd "$HOME/Agent-Chrome-Bridge"` (quote paths that contain spaces).
 3. `npm run bridge` if doctor/status cannot reach `127.0.0.1:18474`.
 4. `node bridge/control.mjs doctor`
-5. `node bridge/control.mjs status`
-6. Ask the user to **Arm tab** if needed.
-7. `inspect` / `click-ref` / `screenshot` (screenshot-first for Polaris static metrics).
+5. `node bridge/control.mjs pair` if `extensionSession.paired` is false. The user pastes the code. Do not copy the code into chat.
+6. `node bridge/control.mjs status`
+7. Ask the user to **Arm tab** if needed.
+8. `inspect` / `click-ref` / `screenshot` (screenshot-first for Polaris static metrics).
 
 Optional port alias: `AGENT_CHROME_BRIDGE_PORT` (same as `CODEX_CHROME_BRIDGE_PORT`).
 
@@ -68,7 +77,7 @@ After pulling or updating the repo, always run:
 node bridge/control.mjs doctor
 ```
 
-If `doctor` returns `Not found`, a protocol mismatch, or a stale bridge warning, the bridge process is still running old code. Restart it, then ask the user to re-arm:
+If `doctor` returns `Not found`, a protocol mismatch, or a stale bridge warning, the bridge process is still running old code. Restart it, pair the extension again if `extensionPaired` is false, then ask the user to re-arm:
 
 ```bash
 lsof -ti tcp:18474 | xargs -r kill

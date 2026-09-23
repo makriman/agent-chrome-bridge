@@ -16,6 +16,7 @@ function usage() {
   console.error(`Usage:
   node bridge/control.mjs status
   node bridge/control.mjs doctor
+  node bridge/control.mjs pair
   node bridge/control.mjs queue
   node bridge/control.mjs flush
   node bridge/control.mjs cancel <command-id>
@@ -318,6 +319,20 @@ try {
     printJson(status);
   } else if (action === "doctor") {
     await runDoctor();
+  } else if (action === "pair") {
+    await bridgeHello();
+    const started = await request("/pair/start", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: "{}"
+    });
+    const pairUrl = `${BRIDGE_URL}/pair#${started.ticket}`;
+    console.log(`Pairing code (one time, expires ${started.expiresAt}):`);
+    console.log(started.ticket);
+    console.log("");
+    console.log("Paste that code into the Agent Chrome Bridge popup.");
+    console.log("Or open this page in Chrome and click Pair from tab:");
+    console.log(pairUrl);
   } else if (action === "queue") {
     await bridgeHello();
     printJson(await request("/queue"));
