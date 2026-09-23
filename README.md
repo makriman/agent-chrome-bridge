@@ -60,7 +60,13 @@ npm run bridge
 node bridge/control.mjs doctor
 ```
 
-Load `extension/` in `chrome://extensions` (Developer mode → Load unpacked). Open the target site in Chrome, then click **Arm tab** in the popup.
+Load `extension/` in `chrome://extensions` (Developer mode → Load unpacked). Pair the extension to this bridge, then open the target site and click **Arm tab**.
+
+```bash
+node bridge/control.mjs pair
+```
+
+Paste the one-time code into the popup, or open the printed `http://127.0.0.1:18474/pair#…` page and click **Pair from tab**. `/poll` and `/event` reject callers that do not present that paired extension session. The operator token in `.bridge-token` still authorizes the CLI only. Reload the extension after pulling this change, then pair again.
 
 Optional port alias:
 

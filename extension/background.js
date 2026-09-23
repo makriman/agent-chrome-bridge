@@ -1,7 +1,10 @@
+import { assignFrameOffsets, placeItems, translateRect } from "./frame-geometry.mjs";
+import { isTrustedExtensionSender } from "./extension-sender.mjs";
+
 const SOURCE = "codex-chrome-bridge";
 const BRIDGE_URL = "http://127.0.0.1:18474";
 const BRIDGE_VERSION = "0.1.0";
-const PROTOCOL_VERSION = 2;
+const PROTOCOL_VERSION = 3;
 const ARM_DURATION_MS = 30 * 60 * 1000;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30000;
 const POLL_INTERVAL_MS = 500;
@@ -10,6 +13,7 @@ const COMMAND_HEARTBEAT_MS = 2000;
 
 let state = {
   extensionInstanceId: `ext_${crypto.randomUUID()}`,
+  extensionToken: "",
   armed: null,
   debuggerTabId: null,
   activeBridgeInstanceId: null,
@@ -107,6 +111,7 @@ function publicState() {
     lastBridgeHelloAt: state.lastBridgeHelloAt,
     lastPollAt: state.lastPollAt,
     lastCommandAt: state.lastCommandAt,
+    paired: Boolean(state.extensionToken),
     armed: sanitizedArmed(),
     runningCommand: state.runningCommand,
     latestCommand: state.latestCommand,
@@ -154,11 +159,18 @@ function log(message, extra) {
   postEvent("log", entry).catch(() => {});
 }
 
+function extensionHeaders(extra = {}) {
+  const headers = { ...extra };
+  if (state.extensionToken) headers["x-codex-bridge-extension-token"] = state.extensionToken;
+  return headers;
+}
+
 async function postEvent(type, payload = {}) {
+  if (!state.extensionToken) return;
   try {
     const response = await fetch(`${BRIDGE_URL}/event`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: extensionHeaders({ "content-type": "application/json" }),
       body: JSON.stringify({
         type,
         payload: {
@@ -303,53 +315,77 @@ async function sendCdp(tabId, method, params = {}) {
 }
 
 async function ensureContent(tabId) {
+  await chromeCall("scripting", "executeScript", {
+    target: { tabId, allFrames: true },
+    files: ["content.js"]
+  });
+}
+
+async function listFrames(tabId) {
   try {
-    await chromeCall("tabs", "sendMessage", tabId, { source: SOURCE, type: "ping" }, { frameId: 0 });
+    const frames = await chromeCall("webNavigation", "getAllFrames", { tabId });
+    if (Array.isArray(frames) && frames.length > 0) return frames;
   } catch (_) {
-    await chromeCall("scripting", "executeScript", {
-      target: { tabId, allFrames: true },
-      files: ["content.js"]
-    });
+    // webNavigation can fail on restricted tabs. Top frame still answers.
   }
+  return [{ frameId: 0, parentFrameId: -1, url: "" }];
+}
+
+async function queryFrames(tabId, message) {
+  await ensureContent(tabId);
+  const frames = await listFrames(tabId);
+  const reports = [];
+  for (const frame of frames) {
+    try {
+      const response = await chromeCall(
+        "tabs",
+        "sendMessage",
+        tabId,
+        { source: SOURCE, ...message },
+        { frameId: frame.frameId }
+      );
+      if (response && response.ok) reports.push({ frameId: frame.frameId, ...response });
+    } catch (_) {
+      // The frame can navigate away between injection and the message.
+    }
+  }
+  return { frames, reports };
 }
 
 async function inspect(command) {
   const tab = await getArmedTab();
-  await ensureContent(tab.id);
-  const response = await chromeCall(
-    "tabs",
-    "sendMessage",
-    tab.id,
-    { source: SOURCE, type: "inspect", limit: command.limit || 120 },
-    { frameId: 0 }
-  );
+  const limit = command.limit || 120;
+  const { frames, reports } = await queryFrames(tab.id, { type: "inspect", limit });
+  const items = placeItems(frames, reports).slice(0, limit);
+  const top = reports.find((report) => report.frameId === 0) || reports[0];
+  const viewport = top && top.viewport ? top.viewport : { width: null, height: null, deviceScaleFactor: null };
   return {
     url: sanitizeUrl(tab.url),
     title: tab.title,
     armSessionId: state.armed.armSessionId,
     viewport: {
-      width: response.viewport ? response.viewport.width : null,
-      height: response.viewport ? response.viewport.height : null,
-      deviceScaleFactor: response.viewport ? response.viewport.deviceScaleFactor : null
+      width: viewport.width,
+      height: viewport.height,
+      deviceScaleFactor: viewport.deviceScaleFactor
     },
-    items: response.items || [],
-    redactions: response.redactions || []
+    items,
+    redactions: items.flatMap((item) => item.redactions || [])
   };
 }
 
 async function findTarget(tabId, spec) {
-  await ensureContent(tabId);
-  const response = await chromeCall(
-    "tabs",
-    "sendMessage",
-    tabId,
-    { source: SOURCE, type: "find", spec },
-    { frameId: 0 }
-  );
-  if (!response || !response.target) {
-    throw new Error(`No target found for ${JSON.stringify(spec)}.`);
+  const { frames, reports } = await queryFrames(tabId, { type: "find", spec });
+  const childFramesById = new Map(reports.map((report) => [report.frameId, report.childFrames || []]));
+  const offsets = assignFrameOffsets(frames, childFramesById);
+  const found = [];
+  for (const report of reports) {
+    if (!report.target || !report.target.rect) continue;
+    const offset = offsets.get(report.frameId) || { x: 0, y: 0 };
+    found.push({ ...report.target, rect: translateRect(report.target.rect, offset) });
   }
-  return response.target;
+  found.sort((a, b) => a.rect.top - b.rect.top || a.rect.left - b.rect.left);
+  if (!found[0]) throw new Error(`No target found for ${JSON.stringify(spec)}.`);
+  return found[0];
 }
 
 function center(rect) {
@@ -519,16 +555,15 @@ async function typeText(command) {
 async function fill(command) {
   const tab = await getArmedTab();
   if (!command.ref) throw new Error("fill requires a ref from inspect.");
-  await ensureContent(tab.id);
-  const response = await chromeCall(
-    "tabs",
-    "sendMessage",
-    tab.id,
-    { source: SOURCE, type: "setValue", spec: { ref: command.ref }, text: String(command.text || "") },
-    { frameId: 0 }
-  );
-  if (!response || !response.ok) {
-    throw new Error(response && response.error ? response.error : `Unable to fill ${command.ref}.`);
+  const { reports } = await queryFrames(tab.id, {
+    type: "setValue",
+    spec: { ref: command.ref },
+    text: String(command.text || "")
+  });
+  const success = reports.map((report) => report.result).find((result) => result && result.ok);
+  if (!success) {
+    const reason = reports.map((report) => report.result && report.result.error).find(Boolean);
+    throw new Error(reason || `Unable to fill ${command.ref}.`);
   }
   return { filled: command.ref, length: String(command.text || "").length };
 }
@@ -632,16 +667,9 @@ async function waitFor(command) {
       const current = await chromeCall("tabs", "get", tab.id);
       if ((current.url || "").includes(value)) return { matched: "url", value: sanitizeUrl(current.url) };
     } else {
-      await ensureContent(tab.id);
       const spec = kind === "selector" ? { selector: value } : { text: value };
-      const target = await chromeCall(
-        "tabs",
-        "sendMessage",
-        tab.id,
-        { source: SOURCE, type: "find", spec },
-        { frameId: 0 }
-      ).catch(() => null);
-      if (target && target.target) return { matched: kind || "text", target: target.target };
+      const target = await findTarget(tab.id, spec).catch(() => null);
+      if (target) return { matched: kind || "text", target };
     }
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
@@ -737,17 +765,58 @@ async function runBridgeCommand(command) {
   }
 }
 
+async function redeemPairTicket(ticket) {
+  const code = String(ticket || "").trim();
+  if (!/^[a-f0-9]{64}$/i.test(code)) {
+    throw new Error("Pairing code should be the 64-character code from `node bridge/control.mjs pair`.");
+  }
+  const response = await fetch(`${BRIDGE_URL}/pair/redeem`, {
+    method: "POST",
+    headers: { "content-type": "application/json" },
+    body: JSON.stringify({ ticket: code, extensionInstanceId: state.extensionInstanceId })
+  });
+  const payload = await response.json().catch(() => null);
+  if (!response.ok || !payload || !payload.ok || !payload.extensionToken) {
+    throw new Error(payload && payload.error ? payload.error : "Pairing failed.");
+  }
+  state.extensionToken = payload.extensionToken;
+  if (payload.bridgeInstanceId) state.activeBridgeInstanceId = payload.bridgeInstanceId;
+  await storageSet({ state });
+  await helloBridge({ force: true });
+  return publicState();
+}
+
+async function pairFromActiveTab() {
+  const tab = await activeTab();
+  let parsed;
+  try {
+    parsed = new URL(tab.url || "");
+  } catch (_) {
+    throw new Error("Active tab has no URL to pair from.");
+  }
+  const allowedOrigin = parsed.origin === BRIDGE_URL || parsed.origin === "http://localhost:18474";
+  if (!allowedOrigin || parsed.pathname !== "/pair") {
+    throw new Error("Open the pairing page from `node bridge/control.mjs pair` in the active tab, then try again.");
+  }
+  return redeemPairTicket(decodeURIComponent(parsed.hash.replace(/^#/, "")));
+}
+
 async function pollBridge() {
   if (pollInFlight || state.runningCommand) return;
   pollInFlight = true;
   try {
+    await whenRestored();
     await helloBridge();
+    if (!state.extensionToken) return;
     const params = new URLSearchParams({
       extensionInstanceId: state.extensionInstanceId,
       bridgeInstanceId: state.activeBridgeInstanceId || ""
     });
     if (state.armed && state.armed.armSessionId) params.set("armSessionId", state.armed.armSessionId);
-    const response = await fetch(`${BRIDGE_URL}/poll?${params.toString()}`, { cache: "no-store" });
+    const response = await fetch(`${BRIDGE_URL}/poll?${params.toString()}`, {
+      cache: "no-store",
+      headers: extensionHeaders()
+    });
     state.lastPollAt = new Date().toISOString();
     await storageSet({ state });
     if (!response.ok) return;
@@ -763,13 +832,16 @@ async function pollBridge() {
   }
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (!isTrustedExtensionSender(sender, chrome.runtime.id)) return false;
   if (!message || message.source !== SOURCE) return false;
   if (message.type === "popup-command") {
     const action = message.action;
     const run =
       action === "arm" ? armActiveTab() :
       action === "disarm" ? disarm() :
+      action === "pair" ? redeemPairTicket(message.ticket) :
+      action === "pair-tab" ? pairFromActiveTab() :
       Promise.resolve(publicState());
     run.then((result) => sendResponse({ ok: true, result }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));
@@ -779,11 +851,11 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 chrome.runtime.onInstalled.addListener(() => {
-  storageSet({ state });
+  whenRestored().then(() => storageSet({ state }));
 });
 
 chrome.runtime.onStartup.addListener(() => {
-  restoreState().then(() => helloBridge({ force: true }));
+  whenRestored().then(() => helloBridge({ force: true }));
 });
 
 chrome.tabs.onUpdated.addListener((tabId, _changeInfo, tab) => {
@@ -800,6 +872,13 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   }
 });
 
-restoreState().then(() => helloBridge({ force: true }));
-setInterval(pollBridge, POLL_INTERVAL_MS);
-pollBridge();
+const restored = restoreState();
+function whenRestored() {
+  return restored;
+}
+
+restored.then(() => helloBridge({ force: true }));
+setInterval(() => {
+  restored.then(() => pollBridge());
+}, POLL_INTERVAL_MS);
+restored.then(() => pollBridge());
