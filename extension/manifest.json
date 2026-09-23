@@ -5,6 +5,7 @@
   "version": "0.1.0",
   "permissions": [
     "activeTab",
+    "alarms",
     "debugger",
     "scripting",
     "storage",
@@ -12,9 +13,12 @@
     "webNavigation"
   ],
   "host_permissions": [
-    "<all_urls>",
     "http://127.0.0.1:18474/*",
     "http://localhost:18474/*"
+  ],
+  "optional_host_permissions": [
+    "http://*/*",
+    "https://*/*"
   ],
   "background": {
     "service_worker": "background.js",

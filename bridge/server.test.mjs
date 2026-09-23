@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import http from "node:http";
-import { mkdtemp, rm } from "node:fs/promises";
+import { chmod, mkdtemp, rm, stat, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
@@ -40,9 +40,9 @@ function request(bridge, path, { method = "GET", headers = {}, body } = {}) {
   });
 }
 
-async function withBridge(fn) {
+async function withBridge(fn, options = {}) {
   const root = await mkdtemp(join(tmpdir(), "agent-chrome-bridge-"));
-  const bridge = await startBridge({ port: 0, root, quiet: true });
+  const bridge = await startBridge({ port: 0, root, quiet: true, ...options });
   try {
     await fn(bridge, root);
   } finally {
@@ -268,6 +268,7 @@ test("heartbeat cannot extend a lease past the original deadline", async () => {
     const polled = await request(bridge, `/poll?extensionInstanceId=${session.extensionInstanceId}`, {
       headers: { "x-codex-bridge-extension-token": session.extensionToken }
     });
+    assert.ok(polled.payload.leaseExpiresAt <= polled.payload.deadlineAt);
     await new Promise((resolve) => setTimeout(resolve, 40));
     const beat = await request(bridge, "/event", {
       method: "POST",
@@ -426,4 +427,96 @@ test("paired poll proves the session and session-proof does not echo the extensi
     assert.equal(doctor.payload.doctor.extensionSession.paired, true);
     assert.equal(doctor.payload.extensionPaired, true);
   });
+});
+
+test("json bodies over the cap are rejected", async () => {
+  await withBridge(async (bridge) => {
+    const oversized = await request(bridge, "/command", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-codex-bridge-token": bridge.token
+      },
+      body: { type: "wait", ms: 1, pad: "x".repeat(400) }
+    });
+    assert.equal(oversized.status, 413);
+    assert.equal(oversized.payload.ok, false);
+    assert.match(oversized.payload.error, /exceeds 128 bytes/);
+  }, { maxBodyBytes: 128, requestTimeout: 2000 });
+});
+
+test("only the newest in-bound screenshot stays in memory", async () => {
+  await withBridge(async (bridge) => {
+    const session = await pair(bridge);
+    async function finish(dataUrl) {
+      const queued = await request(bridge, "/command", {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-codex-bridge-token": bridge.token
+        },
+        body: { type: "screenshot" }
+      });
+      const commandId = queued.payload.command.id;
+      await request(bridge, `/poll?extensionInstanceId=${session.extensionInstanceId}`, {
+        headers: { "x-codex-bridge-extension-token": session.extensionToken }
+      });
+      const posted = await request(bridge, "/event", {
+        method: "POST",
+        headers: extensionHeaders(session.extensionToken),
+        body: {
+          type: "command-result",
+          payload: {
+            id: commandId,
+            extensionInstanceId: session.extensionInstanceId,
+            status: "succeeded",
+            result: { dataUrl }
+          }
+        }
+      });
+      assert.equal(posted.status, 200);
+      return commandId;
+    }
+
+    const first = await finish(`data:image/png;base64,${"a".repeat(16)}`);
+    const second = await finish(`data:image/png;base64,${"b".repeat(16)}`);
+    const firstStored = await request(bridge, `/result?id=${encodeURIComponent(first)}`, {
+      headers: { "x-codex-bridge-token": bridge.token }
+    });
+    const secondStored = await request(bridge, `/result?id=${encodeURIComponent(second)}`, {
+      headers: { "x-codex-bridge-token": bridge.token }
+    });
+    assert.equal(firstStored.payload.command.result.screenshotReleased, true);
+    assert.equal(firstStored.payload.command.result.dataUrl.startsWith("data:"), false);
+    assert.equal(secondStored.payload.command.result.dataUrl.startsWith("data:"), true);
+
+    const huge = await finish(`data:image/png;base64,${"c".repeat(80)}`);
+    const hugeStored = await request(bridge, `/result?id=${encodeURIComponent(huge)}`, {
+      headers: { "x-codex-bridge-token": bridge.token }
+    });
+    assert.equal(hugeStored.payload.command.result.screenshotOmitted, true);
+    assert.equal(hugeStored.payload.command.result.dataUrl.includes("cccc"), false);
+    const secondAfterHuge = await request(bridge, `/result?id=${encodeURIComponent(second)}`, {
+      headers: { "x-codex-bridge-token": bridge.token }
+    });
+    assert.equal(secondAfterHuge.payload.command.result.dataUrl.startsWith("data:"), true);
+  }, { maxScreenshotChars: 40 });
+});
+
+test("loading an existing token file chmods it to 0600", async () => {
+  const root = await mkdtemp(join(tmpdir(), "agent-chrome-bridge-mode-"));
+  const tokenPath = join(root, ".bridge-token");
+  const extensionPath = join(root, ".bridge-extension-session");
+  await writeFile(tokenPath, `${"ab".repeat(32)}\n`, { mode: 0o644 });
+  await writeFile(extensionPath, `${"cd".repeat(32)}\n`, { mode: 0o644 });
+  await chmod(tokenPath, 0o644);
+  await chmod(extensionPath, 0o644);
+  const bridge = await startBridge({ port: 0, root, quiet: true });
+  try {
+    assert.equal((await stat(tokenPath)).mode & 0o777, 0o600);
+    assert.equal((await stat(extensionPath)).mode & 0o777, 0o600);
+  } finally {
+    await bridge.close();
+    await rm(root, { recursive: true, force: true });
+  }
 });

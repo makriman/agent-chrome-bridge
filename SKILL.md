@@ -275,7 +275,7 @@ node bridge/control.mjs flush
 
 ## Screenshot Caveat
 
-Screenshots try CDP `Page.captureScreenshot` first, then `tabs.captureVisibleTab` (needs a focused window and host permission). If `screenshot` fails with a Chrome permission error, keep working with `inspect` and report the screenshot capability failure. Do not treat this as loss of browser access when `status`, `inspect`, and command round-trip still work. Quote paths that contain spaces.
+Screenshots try CDP `Page.captureScreenshot` first, then `tabs.captureVisibleTab` (needs a focused window and the armed origin's host permission, which **Arm tab** requests). If `screenshot` fails with a Chrome permission error, keep working with `inspect` and report the screenshot capability failure. Do not treat this as loss of browser access when `status`, `inspect`, and command round-trip still work. Quote paths that contain spaces.
 
 On Grok Bot / Mac, pull the PNG with CopyToBox after a successful screenshot.
 
