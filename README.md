@@ -41,8 +41,9 @@ The GitHub repo is **Agent-Chrome-Bridge**. Older `codex-chrome-bridge` clone UR
 | Auth header | `x-codex-bridge-token` | Operator CLI only; do not rename |
 | Extension header | `x-codex-bridge-extension-token` | Paired extension on `/poll` and `/event` |
 | Protocol | v3 | Restart the bridge and reload the extension after an upgrade |
-| Listen address | `http://127.0.0.1:18474` | `doctor` fails closed on another host or port |
-| Approval env | `CODEX_CHROME_BRIDGE_APPROVE` | Does not grant final actions. Use the popup approval from the arm draft |
+| Listen address | `http://127.0.0.1:18474` | Pinned. `doctor` fails closed on another host or port |
+| Bridge URL env | `CODEX_CHROME_BRIDGE_URL` | Must stay `http://127.0.0.1:18474` |
+| Approval env | `CODEX_CHROME_BRIDGE_APPROVE` | Ignored. Final actions need a popup token |
 
 Existing `~/codex-chrome-bridge` checkouts and `CODEX_CHROME_BRIDGE_*` scripts remain valid.
 
@@ -69,7 +70,7 @@ node bridge/control.mjs pair
 
 Paste the one-time code into the popup, or open the printed `http://127.0.0.1:18474/pair#…` page and click **Pair from tab**. `/poll` and `/event` reject unpaired clients. The extension stores its token in `chrome.storage.session` and asks the listener to prove it knows that token before sending the header. Reloading the unpacked extension clears the session — pair again. A bridge restart keeps `.bridge-extension-session`; re-arm, and pair again only if `doctor` still reports `extension_unpaired`.
 
-Do not point `CODEX_CHROME_BRIDGE_URL` at another host or port. `doctor` fails closed if you do. Screenshot and workflow outputs stay under `artifacts/` (absolute paths and `..` are rejected by the path draft). Final actions — submit, purchase, delete, send, post, pay, and Enter — need the popup **Approve final action** from the arm draft. Do not treat `CODEX_CHROME_BRIDGE_APPROVE` or `--approve` as that approval. Mac smoke is human-run via [docs/MAC-SMOKE-CHECKLIST.md](docs/MAC-SMOKE-CHECKLIST.md). CI does not run it.
+Open the target site, then click **Arm tab**. The arm is limited to that tab's http(s) origin. Do not point `CODEX_CHROME_BRIDGE_URL` at another host or port, and do not set `AGENT_CHROME_BRIDGE_PORT` or `CODEX_CHROME_BRIDGE_PORT` to anything other than `18474`. `doctor` fails closed if the URL is wrong. Screenshot and workflow outputs stay under `artifacts/` (absolute paths and `..` are rejected). Final actions — submit, purchase, delete, send, post, pay, and Enter — need the popup **Approve final action** token. Do not treat `CODEX_CHROME_BRIDGE_APPROVE` or `--approve` as that approval. Mac smoke is human-run via [docs/MAC-SMOKE-CHECKLIST.md](docs/MAC-SMOKE-CHECKLIST.md). CI does not run it.
 
 The 2026-09-23 findings are in [docs/SECURITY-REVIEW-2026-09-23.md](docs/SECURITY-REVIEW-2026-09-23.md). Agent notes are in [AGENTS.md](AGENTS.md).
 

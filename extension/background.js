@@ -1,6 +1,7 @@
 import { assertCdpMethodAllowed } from "./cdp-allowlist.mjs";
 import { assignFrameOffsets, placeItems, translateRect } from "./frame-geometry.mjs";
 import { isTrustedExtensionSender } from "./extension-sender.mjs";
+import { FINAL_ACTION_TTL_MS, assertResolvedNavigation, httpOrigin, isFinalActionCommand } from "./final-actions.js";
 import { armedOriginPattern } from "./host-access.mjs";
 import { boundScreenshotResult, releaseScreenshotResult } from "./resource-bounds.mjs";
 import {
@@ -13,7 +14,9 @@ import {
 } from "./extension-credential.mjs";
 
 const SOURCE = "codex-chrome-bridge";
-const BRIDGE_URL = "http://127.0.0.1:18474";
+const BRIDGE_HOST = "127.0.0.1";
+const BRIDGE_PORT = 18474;
+const BRIDGE_URL = `http://${BRIDGE_HOST}:${BRIDGE_PORT}`;
 const BRIDGE_VERSION = "0.1.0";
 const PROTOCOL_VERSION = 3;
 const ARM_DURATION_MS = 30 * 60 * 1000;
@@ -49,13 +52,15 @@ let state = {
       hint: "Screenshots use CDP first and tabs.captureVisibleTab as fallback."
     }
   },
-  logs: []
+  logs: [],
+  finalActionGrant: null
 };
 
 let pollInFlight = false;
 let helloInFlight = false;
 let lastCommandId = "";
 let proofFreshUntil = 0;
+let armEpoch = 0;
 
 function storage() {
   return chrome.storage.session || chrome.storage.local;
@@ -163,6 +168,26 @@ function summarizeResult(result) {
   };
 }
 
+function finalActionPublic() {
+  const grant = state.finalActionGrant;
+  if (!grant || grant.used || grant.expiresAt <= Date.now()) return null;
+  return {
+    expiresAt: grant.expiresAt,
+    origin: grant.origin,
+    armSessionId: grant.armSessionId
+  };
+}
+
+function redactCommand(command) {
+  if (!command || typeof command !== "object" || !command.approvalToken) return command;
+  return { ...command, approvalToken: "[redacted]" };
+}
+
+async function sha256Hex(value) {
+  const digest = await crypto.subtle.digest("SHA-256", new TextEncoder().encode(String(value)));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
 function publicState() {
   return {
     bridgeVersion: BRIDGE_VERSION,
@@ -178,6 +203,7 @@ function publicState() {
     protocolMismatch: state.protocolMismatch || null,
     listenerUntrusted: Boolean(state.listenerUntrusted),
     armed: sanitizedArmed(),
+    finalActionApproval: finalActionPublic(),
     runningCommand: state.runningCommand,
     latestCommand: state.latestCommand,
     latestResult: summarizeResult(state.latestResult),
@@ -210,6 +236,9 @@ async function restoreState() {
     if (credential.bridgeInstanceId) state.activeBridgeInstanceId = credential.bridgeInstanceId;
   }
   if (leakedToken) await storageSet({ state });
+  if (state.finalActionGrant && state.finalActionGrant.expiresAt <= Date.now()) {
+    state.finalActionGrant = null;
+  }
   if (state.armed && state.armed.expiresAt <= Date.now()) {
     await clearArm({ reason: "arm_expired" });
   } else if (state.armed) {
@@ -330,7 +359,8 @@ async function helloBridge({ force = false } = {}) {
       state.lastBridgeHelloAt = new Date().toISOString();
       proofFreshUntil = 0;
       await storageSet({ state });
-      return;
+      if (state.armed) await clearArm({ reason: "protocol_mismatch" });
+      return payload;
     }
     state.protocolMismatch = null;
     if (state.operatorFingerprint && payload.tokenFingerprint && payload.tokenFingerprint !== state.operatorFingerprint) {
@@ -339,12 +369,28 @@ async function helloBridge({ force = false } = {}) {
       proofFreshUntil = 0;
       state.lastBridgeHelloAt = new Date().toISOString();
       await storageSet({ state });
-      return;
+      if (state.armed) await clearArm({ reason: "listener_fingerprint_mismatch" });
+      return payload;
     }
     state.listenerUntrusted = false;
-    const changed = payload.bridgeInstanceId && payload.bridgeInstanceId !== state.activeBridgeInstanceId;
-    state.activeBridgeInstanceId = payload.bridgeInstanceId || state.activeBridgeInstanceId;
+    const incoming = payload.bridgeInstanceId || null;
+    if (state.armed && incoming && state.armed.bridgeInstanceId && state.armed.bridgeInstanceId !== incoming) {
+      state.activeBridgeInstanceId = incoming;
+      state.lastBridgeHelloAt = new Date().toISOString();
+      await storageSet({ state });
+      await clearArm({ reason: "bridge_instance_changed", bridgeInstanceId: incoming });
+      return payload;
+    }
+    const changed = Boolean(incoming && incoming !== state.activeBridgeInstanceId);
+    state.activeBridgeInstanceId = incoming || state.activeBridgeInstanceId;
     state.lastBridgeHelloAt = new Date().toISOString();
+    if (state.armed && incoming && !state.armed.bridgeInstanceId) {
+      state.armed = {
+        ...state.armed,
+        bridgeInstanceId: incoming,
+        tokenFingerprint: payload.tokenFingerprint || state.armed.tokenFingerprint || null
+      };
+    }
     await storageSet({ state });
     await postEvent("hello", {
       bridgeInstanceId: state.activeBridgeInstanceId,
@@ -354,8 +400,9 @@ async function helloBridge({ force = false } = {}) {
     if (changed && state.armed) {
       await postEvent("arm-state", { armed: sanitizedArmed() });
     }
+    return payload;
   } catch (_) {
-    // Bridge may not be running.
+    return null;
   } finally {
     helloInFlight = false;
   }
@@ -366,10 +413,23 @@ function isArmed() {
 }
 
 async function updateArmedTabSnapshot(tab) {
-  if (!state.armed || tab.id !== state.armed.tabId) return;
+  if (!state.armed || !tab || tab.id !== state.armed.tabId) return;
+  if (!tab.url) return;
+  const origin = httpOrigin(tab.url);
+  const dangerousScheme = /^(javascript|file|data|blob|chrome|chrome-extension|view-source):/i.test(tab.url);
+  if (dangerousScheme || (origin && state.armed.origin && origin !== state.armed.origin)) {
+    await clearArm({
+      reason: "origin_changed",
+      fromOrigin: state.armed ? state.armed.origin : null,
+      url: sanitizeUrl(tab.url)
+    });
+    return;
+  }
+  if (!origin) return;
   state.armed = {
     ...state.armed,
-    url: tab.url || state.armed.url,
+    origin: state.armed.origin || origin,
+    url: tab.url,
     title: tab.title || state.armed.title
   };
   await storageSet({ state });
@@ -405,17 +465,19 @@ function clearArmAlarm() {
   return chromeCall("alarms", "clear", ARM_EXPIRY_ALARM).catch(() => {});
 }
 
-async function clearArm({ reason } = {}) {
+async function clearArm({ reason, ...extra } = {}) {
+  armEpoch += 1;
   const tabId = state.armed ? state.armed.tabId : state.debuggerTabId;
   const url = state.armed ? state.armed.url : "";
   await clearArmAlarm();
   await detachDebugger();
   if (tabId != null) await debuggerCall("detach", { tabId }).catch(() => {});
   state.armed = null;
+  state.finalActionGrant = null;
   state.runningCommand = null;
   await releaseHostAccess(url);
   await storageSet({ state });
-  await postEvent("disarmed", reason ? { reason } : {});
+  await postEvent("disarmed", reason ? { reason, ...extra } : extra);
 }
 
 async function expireArmIfDue() {
@@ -427,6 +489,8 @@ async function expireArmIfDue() {
 async function armActiveTab() {
   const tab = await activeTab();
   const pattern = await ensureHostAccess(tab);
+  const origin = httpOrigin(tab.url || "");
+  if (!origin) throw new Error("Only http/https tabs can be armed.");
   const previousUrl = state.armed ? state.armed.url : "";
   if (state.armed && state.armed.tabId !== tab.id) {
     await detachDebugger();
@@ -434,18 +498,27 @@ async function armActiveTab() {
   if (previousUrl && armedOriginPattern(previousUrl) !== pattern) {
     await releaseHostAccess(previousUrl);
   }
+  const hello = await helloBridge({ force: true });
+  if (state.protocolMismatch) throw new Error(state.protocolMismatch);
+  if (state.listenerUntrusted) {
+    throw new Error(state.credentialProblem || "The listener fingerprint does not match this extension. Run doctor before arming.");
+  }
+  armEpoch += 1;
+  state.finalActionGrant = null;
   state.armed = {
     armSessionId: `arm_${crypto.randomUUID()}`,
     tabId: tab.id,
     windowId: tab.windowId,
     url: tab.url,
     title: tab.title,
+    origin,
+    bridgeInstanceId: hello && hello.bridgeInstanceId ? hello.bridgeInstanceId : null,
+    tokenFingerprint: (hello && hello.tokenFingerprint) || state.operatorFingerprint || null,
     armedAt: Date.now(),
     expiresAt: Date.now() + ARM_DURATION_MS
   };
   await scheduleArmAlarm(state.armed.expiresAt).catch(() => {});
   await storageSet({ state });
-  await helloBridge({ force: true });
   await postEvent("armed", { armed: sanitizedArmed() });
   await postEvent("arm-state", { armed: sanitizedArmed() });
   return publicState();
@@ -466,7 +539,62 @@ async function getArmedTab() {
     throw new Error("Command refused: armed tab is no longer available.");
   }
   await updateArmedTabSnapshot(tab);
+  if (!state.armed || state.armed.tabId !== tab.id) {
+    throw new Error("Arm ended because the tab left its armed origin. Open that site and arm it again.");
+  }
   return tab;
+}
+
+async function mintFinalActionApproval() {
+  if (!isArmed()) throw new Error("Arm a tab before approving a final action.");
+  const bytes = new Uint8Array(32);
+  crypto.getRandomValues(bytes);
+  const approvalToken = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join("");
+  const tokenHash = await sha256Hex(approvalToken);
+  const grant = {
+    tokenHash,
+    expiresAt: Date.now() + FINAL_ACTION_TTL_MS,
+    armSessionId: state.armed.armSessionId,
+    origin: state.armed.origin,
+    bridgeInstanceId: state.armed.bridgeInstanceId || state.activeBridgeInstanceId,
+    used: false
+  };
+  if (!(await ensureListenerProof())) {
+    throw new Error(state.credentialProblem || "Bridge did not prove this extension session. Run doctor, then pair again.");
+  }
+  const response = await fetch(`${BRIDGE_URL}/event`, {
+    method: "POST",
+    headers: extensionHeaders({ "content-type": "application/json" }),
+    body: JSON.stringify({
+      type: "final-action-approval",
+      payload: {
+        extensionInstanceId: state.extensionInstanceId,
+        bridgeInstanceId: state.activeBridgeInstanceId,
+        tokenHash: grant.tokenHash,
+        expiresAt: grant.expiresAt,
+        armSessionId: grant.armSessionId,
+        origin: grant.origin
+      },
+      state: publicState(),
+      at: new Date().toISOString()
+    })
+  });
+  if (response.status === 403) {
+    await forgetExtensionCredential("Bridge rejected the extension session. Run `node bridge/control.mjs pair` and paste a new code.");
+    throw new Error(state.credentialProblem);
+  }
+  if (!response.ok || !listenerAcceptedExtension(response.headers, PROTOCOL_VERSION)) {
+    throw new Error("Bridge did not accept the final-action approval. Start npm run bridge, confirm doctor, and retry.");
+  }
+  state.finalActionGrant = grant;
+  await storageSet({ state });
+  return {
+    approvalToken,
+    expiresAt: grant.expiresAt,
+    origin: grant.origin,
+    armSessionId: grant.armSessionId,
+    hint: "Pass this token once with --approval-token. It expires in 2 minutes and only matches this origin."
+  };
 }
 
 async function ensureDebugger(tabId) {
@@ -751,9 +879,14 @@ async function fill(command) {
 
 async function navigate(command) {
   const tab = await getArmedTab();
-  const destination = new URL(command.url, tab.url);
+  const destination = assertResolvedNavigation(command.url, tab.url);
+  if (destination.origin !== state.armed.origin) {
+    throw new Error(
+      `Navigation blocked: ${destination.origin} is outside the armed origin ${state.armed.origin}. Open that site and arm it.`
+    );
+  }
   await chromeCall("tabs", "update", tab.id, { url: destination.href });
-  return { navigatingTo: sanitizeUrl(destination.href) };
+  return { navigatingTo: sanitizeUrl(destination.href), origin: destination.origin };
 }
 
 async function reload() {
@@ -860,16 +993,43 @@ async function waitFor(command) {
 function assertCommandArm(command) {
   if (command.type === "status" || command.type === "stop" || command.type === "disarm") return;
   if (!isArmed()) throw new Error("Bridge is not armed. Click the extension icon and arm the active tab.");
-  if (command.armSessionId && state.armed && command.armSessionId !== state.armed.armSessionId) {
-    const error = new Error(`Stale arm session. Command targets ${command.armSessionId}; active is ${state.armed.armSessionId}.`);
+  if (!command.armSessionId || !state.armed || command.armSessionId !== state.armed.armSessionId) {
+    const error = new Error(
+      `Stale arm session. Command targets ${command.armSessionId || "nothing"}; active is ${state.armed ? state.armed.armSessionId : "nothing"}.`
+    );
+    error.status = "stale_arm";
+    throw error;
+  }
+  if (state.armed.bridgeInstanceId && command.bridgeInstanceId !== state.armed.bridgeInstanceId) {
+    const error = new Error("Command came from a different bridge instance than the one pinned at arm time. Re-arm after doctor matches.");
     error.status = "stale_arm";
     throw error;
   }
 }
 
+async function assertFinalAction(command) {
+  if (!isFinalActionCommand(command)) return;
+  const grant = state.finalActionGrant;
+  if (!grant || grant.used || grant.expiresAt <= Date.now()) {
+    throw new Error("Final action blocked. Click Approve final action in the extension popup, then retry with that token.");
+  }
+  if (!state.armed || grant.armSessionId !== state.armed.armSessionId || grant.origin !== state.armed.origin) {
+    throw new Error("Final-action approval does not match this armed origin. Approve again.");
+  }
+  const presented = typeof command.approvalToken === "string" ? command.approvalToken : "";
+  const presentedHash = await sha256Hex(presented);
+  if (!presented || presentedHash !== grant.tokenHash) {
+    throw new Error("Final action approval token does not match the popup grant.");
+  }
+  grant.used = true;
+  state.finalActionGrant = grant;
+  await storageSet({ state });
+}
+
 async function handleCommand(command) {
   if (!command || !command.type) throw new Error("Missing command type.");
   assertCommandArm(command);
+  await assertFinalAction(command);
   if (command.type === "status") return publicState();
   if (command.type === "inspect") return inspect(command);
   if (command.type === "click") return click(command);
@@ -922,7 +1082,9 @@ async function finishCommand(command, status, fields = {}) {
 }
 
 async function runBridgeCommand(command) {
-  state.latestCommand = command;
+  const epoch = armEpoch;
+  const armedId = state.armed ? state.armed.armSessionId : null;
+  state.latestCommand = redactCommand(command);
   state.lastCommandAt = new Date().toISOString();
   state.runningCommand = {
     id: command.id,
@@ -943,6 +1105,9 @@ async function runBridgeCommand(command) {
   try {
     const timeoutMs = Math.max(1, Number(command.timeoutMs || DEFAULT_COMMAND_TIMEOUT_MS));
     const result = await withTimeout(handleCommand(command), timeoutMs);
+    if (epoch !== armEpoch || (armedId && (!state.armed || state.armed.armSessionId !== armedId))) {
+      throw new Error("Arm ended before the command finished.");
+    }
     clearInterval(heartbeat);
     await finishCommand(command, "succeeded", { result });
   } catch (error) {
@@ -1045,6 +1210,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       action === "disarm" ? disarm() :
       action === "pair" ? redeemPairTicket(message.ticket) :
       action === "pair-tab" ? pairFromActiveTab() :
+      action === "approve-final" ? mintFinalActionApproval() :
       Promise.resolve(publicState());
     run.then((result) => sendResponse({ ok: true, result }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));

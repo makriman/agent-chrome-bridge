@@ -39,7 +39,9 @@ node bridge/run-workflow.mjs artifacts/workflows/my-task.mjs --timeout 60000
 
 `--resume` skips completed step IDs from `state.json`.
 
-`--approve` grants approval gates for the current run. In normal use, do not pass this until the user has approved the paused final action.
+`--approve` skips only the workflow pause. It does not authorize submit, purchase, delete, send, post, pay, or Enter. Those commands need the token from the extension popup's **Approve final action** button, passed with `--approval-token`. `CODEX_CHROME_BRIDGE_APPROVE` is ignored.
+
+`--run-dir` must be a relative path inside `artifacts/`. Absolute paths and `..` escapes are rejected. Screenshot `output` values follow the same rule.
 
 ## JavaScript Workflows
 
@@ -209,10 +211,10 @@ These artifacts are local and ignored by git.
 artifacts/runs/<run>/approvals/approval_....json
 ```
 
-After the user approves, rerun:
+After the user approves the pause, they still need a popup token before a final click or Enter. In the extension popup, click **Approve final action**, then rerun:
 
 ```bash
-node bridge/run-workflow.mjs artifacts/workflows/my-task.mjs --resume --approve
+node bridge/run-workflow.mjs artifacts/workflows/my-task.mjs --resume --approve --approval-token <popup-token>
 ```
 
-The current implementation uses runner-level approval for Milestone 1. A future side panel will display approval requests and issue short-lived approval tokens.
+The popup token lasts 2 minutes, matches the armed origin, and is single use. `--approve` alone does not satisfy the bridge. A side panel can replace the popup button later; the bridge check stays.

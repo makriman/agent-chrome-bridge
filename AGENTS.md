@@ -69,8 +69,8 @@ Do not print the pairing code, either token, or the session file.
 - Keep JSON bodies at or under 12 MiB. Do not extend a command lease past `deadlineAt`. Do not retain more than one screenshot data URL, and do not retain one over 8 MiB.
 - The bridge is loopback-only. Do not bind `0.0.0.0`, add a tunnel, or turn this into a remote control plane.
 - One armed tab. Do not add a second concurrent arm target.
-- Keep screenshot paths and workflow `--run-dir` values under `artifacts/`. The path draft rejects absolute paths and `..`.
-- Stop before submit, purchase, delete, send, post, pay, or Enter unless the user approved that action. Popup **Approve final action** is the bridge-side token in the arm draft. `--approve` and `CODEX_CHROME_BRIDGE_APPROVE` are not that approval.
+- Keep screenshot paths and workflow `--run-dir` values under `artifacts/`. Absolute paths and `..` are rejected.
+- Stop before submit, purchase, delete, send, post, pay, or Enter unless the user approved that action. Popup **Approve final action** mints the one-time token. `--approve` and `CODEX_CHROME_BRIDGE_APPROVE` are not that approval.
 - Mac smoke is human-run. Follow [docs/MAC-SMOKE-CHECKLIST.md](docs/MAC-SMOKE-CHECKLIST.md) on a Mac with the user's Chrome. CI does not run that checklist and does not need Mac hardware.
 - After a bridge restart, ask the user to arm the tab again.
 
@@ -78,6 +78,6 @@ Do not print the pairing code, either token, or the session file.
 
 This M4/L2/L3 draft is stacked on `cursor/residual-credential-doctor-docs-74c0` (open PR #7), which is stacked on `cursor/fix-poll-event-postmessage-e146` (open PR #5). Retarget it to `main` after PRs #4–#7 land. Do not merge it before that, and do not merge it in this pass.
 
-PR #6 (`cursor/medium-path-arm-loopback-c922`) is a sibling. On retarget, keep this branch's CDP allowlist, loopback-only required host permissions, arm-expiry debugger detach, token `chmod`, body cap, lease cap, and screenshot memory bound. Re-apply #6's path confinement and origin-scoped arm on top. PR #4 is the findings write-up.
+This branch re-applies PR #6 (`cursor/medium-path-arm-loopback-c922`) on the tip of PR #9. It keeps the CDP allowlist, loopback-only required host permissions, arm-expiry debugger detach, token `chmod`, body cap, lease cap, and screenshot memory bound, and adds path confinement, an origin-scoped arm, popup final-action approval, and the pinned `127.0.0.1:18474` listener. PR #4 is the findings write-up. Do not merge or deploy this draft.
 
 Do not merge until founder review.

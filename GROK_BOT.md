@@ -60,7 +60,7 @@ cd "/Users/you/Projects/Agent Chrome Bridge"
 npm run bridge
 ```
 
-Leave the process running in that shell. Do not move it off `127.0.0.1:18474`. `doctor` fails closed on another host or port.
+Leave the process running in that shell. Do not move it off `127.0.0.1:18474`. `doctor` fails closed on another host or port. A different `AGENT_CHROME_BRIDGE_PORT` or `CODEX_CHROME_BRIDGE_PORT` is refused.
 
 ### 4. Doctor
 
@@ -72,7 +72,7 @@ node bridge/control.mjs doctor
 
 The extension token is stored in `chrome.storage.session` and is not written to `chrome.storage.local`. Reloading the unpacked extension clears it. Pair again after a reload. Do not print `.bridge-token` or `.bridge-extension-session`. The pairing code is a one-time localhost secret; do not paste it into chat.
 
-Write screenshots and workflow output under `artifacts/`. The path draft rejects absolute paths and `..`. Stop before submit, purchase, delete, send, post, pay, or Enter unless the user explicitly approved that action. Popup **Approve final action** is the bridge-side token in the arm draft. Do not treat `CODEX_CHROME_BRIDGE_APPROVE` or `--approve` as that approval. Mac smoke is human-run from `docs/MAC-SMOKE-CHECKLIST.md`. CI does not run it.
+Write screenshots and workflow output under `artifacts/`. Absolute paths and `..` are rejected. Stop before submit, purchase, delete, send, post, pay, or Enter unless the user explicitly approved that action. Popup **Approve final action** mints the one-time token. Do not treat `CODEX_CHROME_BRIDGE_APPROVE` or `--approve` as that approval. Mac smoke is human-run from `docs/MAC-SMOKE-CHECKLIST.md`. CI does not run it.
 
 ### 5. Status
 
@@ -90,7 +90,9 @@ Read `connected` and `armed`.
 
 The user must click **Arm tab** in the Agent Chrome Bridge popup. Agents cannot arm a tab remotely. Tell the user which window and URL to arm.
 
-**One armed tab.** The bridge drives a single user-armed tab. If the task needs Partners or Dev Dashboard (Cloudflare-gated), that tab is the Mac-bridge surface. For non-Cloudflare hosts (docs, Box, generic HTTPS), use Box / CopyToBox / ordinary fetch — do not keep swapping the armed tab mid-task to chase every URL.
+**One armed tab, one origin.** The bridge drives a single user-armed tab and stays on that http(s) origin. Cross-origin navigation is rejected. If the task needs Partners or Dev Dashboard (Cloudflare-gated), that tab is the Mac-bridge surface. For non-Cloudflare hosts (docs, Box, generic HTTPS), use Box / CopyToBox / ordinary fetch — do not keep swapping the armed tab mid-task to chase every URL.
+
+Before arming, `doctor` must show `tokenFile.matchesRunningBridge: true`. Compare that fingerprint with the popup after **Arm tab**. If doctor cannot authenticate, do not arm. Submit, purchase, delete, send, and Enter need **Approve final action** in the popup and `--approval-token`. Screenshot paths stay inside `artifacts/`.
 
 ### 7. Inspect, click-ref, screenshot
 
@@ -127,9 +129,9 @@ If screenshot fails with a Chrome permission / CDP error but `inspect` still wor
 
 | Variable | Role |
 | --- | --- |
-| `CODEX_CHROME_BRIDGE_PORT` | Bridge listen port (legacy name) |
-| `AGENT_CHROME_BRIDGE_PORT` | Optional alias for the same port |
-| `CODEX_CHROME_BRIDGE_URL` | CLI/SDK base URL, default `http://127.0.0.1:18474` |
+| `CODEX_CHROME_BRIDGE_PORT` | Must be unset or `18474`. Other ports are refused. |
+| `AGENT_CHROME_BRIDGE_PORT` | Same pin. The extension does not follow a custom port. |
+| `CODEX_CHROME_BRIDGE_URL` | Must stay `http://127.0.0.1:18474` |
 
 Do not rename `x-codex-bridge-token` or the extension message source `codex-chrome-bridge`. Those are wire compatibility, not the product name.
 

@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
 import { proofMatches } from "../extension/extension-credential.mjs";
+import { hashApprovalToken } from "./queue-policy.mjs";
 import { startBridge } from "./server.mjs";
 
 const EXTENSION_ID = "ext_11111111-1111-4111-8111-111111111111";
@@ -79,6 +80,35 @@ function extensionHeaders(extensionToken) {
   };
 }
 
+async function armSession(bridge, session, armSessionId = "arm_test") {
+  const origin = "https://example.com";
+  const armed = await request(bridge, "/event", {
+    method: "POST",
+    headers: extensionHeaders(session.extensionToken),
+    body: {
+      type: "armed",
+      payload: { extensionInstanceId: session.extensionInstanceId },
+      state: {
+        armed: {
+          armSessionId,
+          origin,
+          url: `${origin}/inbox`,
+          title: "Example",
+          expiresAt: Date.now() + 60_000
+        }
+      }
+    }
+  });
+  assert.equal(armed.status, 200);
+  return armSessionId;
+}
+
+function pollPath(session, armSessionId) {
+  const params = new URLSearchParams({ extensionInstanceId: session.extensionInstanceId });
+  if (armSessionId) params.set("armSessionId", armSessionId);
+  return `/poll?${params.toString()}`;
+}
+
 test("poll and event reject callers that are not the paired extension", async () => {
   await withBridge(async (bridge) => {
     const queued = await request(bridge, "/command", {
@@ -87,7 +117,7 @@ test("poll and event reject callers that are not the paired extension", async ()
         "content-type": "application/json",
         "x-codex-bridge-token": bridge.token
       },
-      body: { type: "type", text: "do-not-leak" }
+      body: { type: "status", text: "do-not-leak" }
     });
     assert.equal(queued.status, 200);
     const commandId = queued.payload.command.id;
@@ -150,6 +180,7 @@ test("poll and event reject callers that are not the paired extension", async ()
 test("paired extension can lease a command and later callers cannot overwrite the result", async () => {
   await withBridge(async (bridge) => {
     const session = await pair(bridge);
+    const armSessionId = await armSession(bridge, session);
     const queued = await request(bridge, "/command", {
       method: "POST",
       headers: {
@@ -181,7 +212,7 @@ test("paired extension can lease a command and later callers cannot overwrite th
     });
     assert.equal(wrongExtension.status, 403);
 
-    const polled = await request(bridge, `/poll?extensionInstanceId=${session.extensionInstanceId}`, {
+    const polled = await request(bridge, pollPath(session, armSessionId), {
       headers: { "x-codex-bridge-extension-token": session.extensionToken }
     });
     assert.equal(polled.status, 200);
@@ -257,6 +288,7 @@ test("paired extension can lease a command and later callers cannot overwrite th
 test("heartbeat cannot extend a lease past the original deadline", async () => {
   await withBridge(async (bridge) => {
     const session = await pair(bridge);
+    const armSessionId = await armSession(bridge, session);
     await request(bridge, "/command", {
       method: "POST",
       headers: {
@@ -265,7 +297,7 @@ test("heartbeat cannot extend a lease past the original deadline", async () => {
       },
       body: { type: "wait", ms: 1, timeoutMs: 1000 }
     });
-    const polled = await request(bridge, `/poll?extensionInstanceId=${session.extensionInstanceId}`, {
+    const polled = await request(bridge, pollPath(session, armSessionId), {
       headers: { "x-codex-bridge-extension-token": session.extensionToken }
     });
     assert.ok(polled.payload.leaseExpiresAt <= polled.payload.deadlineAt);
@@ -448,6 +480,7 @@ test("json bodies over the cap are rejected", async () => {
 test("only the newest in-bound screenshot stays in memory", async () => {
   await withBridge(async (bridge) => {
     const session = await pair(bridge);
+    const armSessionId = await armSession(bridge, session);
     async function finish(dataUrl) {
       const queued = await request(bridge, "/command", {
         method: "POST",
@@ -458,7 +491,7 @@ test("only the newest in-bound screenshot stays in memory", async () => {
         body: { type: "screenshot" }
       });
       const commandId = queued.payload.command.id;
-      await request(bridge, `/poll?extensionInstanceId=${session.extensionInstanceId}`, {
+      await request(bridge, pollPath(session, armSessionId), {
         headers: { "x-codex-bridge-extension-token": session.extensionToken }
       });
       const posted = await request(bridge, "/event", {
@@ -501,6 +534,95 @@ test("only the newest in-bound screenshot stays in memory", async () => {
     });
     assert.equal(secondAfterHuge.payload.command.result.dataUrl.startsWith("data:"), true);
   }, { maxScreenshotChars: 40 });
+});
+
+test("an arm is required, paths stay in artifacts, and a second queue waits", async () => {
+  await withBridge(async (bridge) => {
+    const session = await pair(bridge);
+    const unarmed = await request(bridge, "/command", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-codex-bridge-token": bridge.token
+      },
+      body: { type: "inspect" }
+    });
+    assert.equal(unarmed.status, 409);
+    assert.match(unarmed.payload.error, /not armed/);
+
+    const armSessionId = await armSession(bridge, session);
+    const escaped = await request(bridge, "/command", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-codex-bridge-token": bridge.token
+      },
+      body: { type: "screenshot", output: "../.bridge-token" }
+    });
+    assert.equal(escaped.status, 400);
+    assert.match(escaped.payload.error, /escapes|artifacts/);
+
+    const blocked = await request(bridge, "/command", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-codex-bridge-token": bridge.token
+      },
+      body: { type: "click", text: "Send", queueId: "cli_a" }
+    });
+    assert.equal(blocked.status, 403);
+
+    const token = "d".repeat(64);
+    const approved = await request(bridge, "/event", {
+      method: "POST",
+      headers: extensionHeaders(session.extensionToken),
+      body: {
+        type: "final-action-approval",
+        payload: {
+          extensionInstanceId: session.extensionInstanceId,
+          tokenHash: hashApprovalToken(token),
+          expiresAt: Date.now() + 60_000,
+          armSessionId,
+          origin: "https://example.com"
+        }
+      }
+    });
+    assert.equal(approved.status, 200);
+    const send = await request(bridge, "/command", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-codex-bridge-token": bridge.token
+      },
+      body: { type: "click", text: "Send", queueId: "cli_a", approvalToken: token }
+    });
+    assert.equal(send.status, 200);
+    assert.equal(send.payload.command.armSessionId, armSessionId);
+    assert.equal(JSON.stringify(send.payload).includes(token), false);
+
+    const waiting = await request(bridge, pollPath(session), {
+      headers: { "x-codex-bridge-extension-token": session.extensionToken }
+    });
+    assert.equal(waiting.payload.id, undefined);
+
+    const otherQueue = await request(bridge, "/command", {
+      method: "POST",
+      headers: {
+        "content-type": "application/json",
+        "x-codex-bridge-token": bridge.token
+      },
+      body: { type: "inspect", queueId: "cli_b" }
+    });
+    assert.equal(otherQueue.status, 409);
+    assert.match(otherQueue.payload.error, /already has work/);
+
+    const leased = await request(bridge, pollPath(session, armSessionId), {
+      headers: { "x-codex-bridge-extension-token": session.extensionToken }
+    });
+    assert.equal(leased.payload.id, send.payload.command.id);
+    assert.equal(leased.payload.status, "leased");
+    assert.ok(leased.payload.leaseExpiresAt <= leased.payload.deadlineAt);
+  });
 });
 
 test("loading an existing token file chmods it to 0600", async () => {
