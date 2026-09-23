@@ -1,14 +1,24 @@
-import { createHash } from "node:crypto";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
-import { dirname, join, resolve } from "node:path";
+import { createHash, randomUUID } from "node:crypto";
+import { readFile, stat, writeFile, mkdir } from "node:fs/promises";
+import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BRIDGE_VERSION, PROTOCOL_VERSION, TERMINAL_STATUSES as TERMINAL_STATUS_LIST } from "./protocol.mjs";
+import { assertLoopbackBridgeUrl } from "./bridge-url.mjs";
+import { guardOutgoingCommand } from "./command-guard.mjs";
+import { confineArtifactsFile } from "./paths.mjs";
+import { BRIDGE_VERSION, DEFAULT_BRIDGE_URL, PROTOCOL_VERSION, TERMINAL_STATUSES as TERMINAL_STATUS_LIST } from "./protocol.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
 const TOKEN_PATH = join(ROOT, ".bridge-token");
-const BRIDGE_URL = process.env.CODEX_CHROME_BRIDGE_URL || "http://127.0.0.1:18474";
+const BRIDGE_URL = process.env.CODEX_CHROME_BRIDGE_URL || DEFAULT_BRIDGE_URL;
 const TERMINAL_STATUSES = new Set(TERMINAL_STATUS_LIST);
+const PROCESS_QUEUE_ID = `cli_${randomUUID()}`;
+try {
+  assertLoopbackBridgeUrl(BRIDGE_URL);
+} catch (error) {
+  console.error(error.message);
+  process.exit(1);
+}
 
 const action = process.argv[2] || "status";
 
@@ -38,14 +48,18 @@ function usage() {
   node bridge/control.mjs reload
   node bridge/control.mjs back
   node bridge/control.mjs forward
-  node bridge/control.mjs screenshot [output.png]
+  node bridge/control.mjs screenshot [artifacts/output.png]
   node bridge/control.mjs wait 1000
   node bridge/control.mjs stop
   node bridge/control.mjs raw '{"type":"click","x":400,"y":300}'
 
 Options:
-  --timeout <ms>    Command timeout, default 30000.
-  --jsonl           Print lifecycle events while waiting.`);
+  --timeout <ms>           Command timeout, default 30000.
+  --jsonl                  Print lifecycle events while waiting.
+  --approval-token <token> Popup token for submit/purchase/delete/send/Enter.
+  --queue-id <id>          Queue id for this process. Defaults to a per-process id.
+
+Screenshot and workflow paths must stay inside artifacts/. Absolute paths and .. escapes are rejected.`);
 }
 
 function hasFlag(name) {
@@ -62,7 +76,7 @@ function positionalArgs() {
   for (let index = 3; index < process.argv.length; index += 1) {
     const value = process.argv[index];
     if (value === "--exact" || value === "--jsonl") continue;
-    if (value === "--index" || value === "--timeout") {
+    if (value === "--index" || value === "--timeout" || value === "--approval-token" || value === "--queue-id") {
       index += 1;
       continue;
     }
@@ -164,9 +178,12 @@ async function localTokenInfo() {
 
 function withCommonFields(command) {
   const timeoutMs = Number(flagValue("--timeout", command.timeoutMs || 30000));
+  const approvalToken = flagValue("--approval-token");
   return {
     ...command,
     timeoutMs,
+    queueId: flagValue("--queue-id", PROCESS_QUEUE_ID),
+    ...(approvalToken ? { approvalToken } : {}),
     client: {
       name: "codex-chrome-bridge-cli",
       version: BRIDGE_VERSION
@@ -204,7 +221,8 @@ function commandFromArgs() {
   if (action === "fill-ref") return withCommonFields({ type: "fill", ref: process.argv[3] || "", text: process.argv[4] || "" });
   if (action === "type") return withCommonFields({ type: "type", text: process.argv[3] || "" });
   if (action === "key") {
-    const modifiers = (process.argv[4] || "")
+    const modifierArg = process.argv[4] && !process.argv[4].startsWith("--") ? process.argv[4] : "";
+    const modifiers = modifierArg
       .split(",")
       .map((value) => value.trim())
       .filter(Boolean);
@@ -262,8 +280,7 @@ async function saveScreenshot(command) {
   if (!command || !command.result || !command.result.dataUrl || !command.output) return;
   const [, meta, base64] = command.result.dataUrl.match(/^data:(.+);base64,(.*)$/) || [];
   if (!base64) return;
-  const outputPath = resolve(ROOT, command.output);
-  await mkdir(dirname(outputPath), { recursive: true });
+  const outputPath = await confineArtifactsFile(ROOT, command.output);
   await writeFile(outputPath, Buffer.from(base64, "base64"));
   command.result = {
     ...command.result,
@@ -274,7 +291,7 @@ async function saveScreenshot(command) {
 }
 
 async function runCommand() {
-  const command = commandFromArgs();
+  const command = guardOutgoingCommand(commandFromArgs(), { repoRoot: ROOT });
   const queued = await enqueue(command);
   const result = await waitForResult(queued.id, Number(command.timeoutMs || 30000) + 10000);
   await saveScreenshot(result);

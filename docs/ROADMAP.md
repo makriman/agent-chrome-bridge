@@ -79,7 +79,7 @@ flowchart LR
 - Add active dialog and focused element reporting.
 - Add download monitoring.
 - Add side panel with command log, current arm, expiry countdown, screenshots, diagnostics, and stop button.
-- Add final-action approval tokens for `send`, `purchase`, `delete`, `admin`, and other high-risk operations.
+- Final-action approval tokens are required for classified submit, purchase, delete, send, post, pay, and Enter commands. A side panel can replace the popup button later.
 
 ## Safety Modes
 

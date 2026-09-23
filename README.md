@@ -39,9 +39,9 @@ The GitHub repo is **Agent-Chrome-Bridge**. Older `codex-chrome-bridge` clone UR
 | npm `name` | `codex-chrome-bridge` | Package alias only; display name is Agent Chrome Bridge |
 | Extension message `source` | `codex-chrome-bridge` | Wire compat; do not rename |
 | Auth header | `x-codex-bridge-token` | Wire header; do not rename |
-| Listen port env | `CODEX_CHROME_BRIDGE_PORT` | Optional alias: `AGENT_CHROME_BRIDGE_PORT` |
-| Bridge URL env | `CODEX_CHROME_BRIDGE_URL` | Default `http://127.0.0.1:18474` |
-| Approval env | `CODEX_CHROME_BRIDGE_APPROVE` | Workflow runner only |
+| Listen port | `127.0.0.1:18474` only | The extension is pinned. Other ports are refused. |
+| Bridge URL env | `CODEX_CHROME_BRIDGE_URL` | Must stay `http://127.0.0.1:18474` |
+| Approval env | `CODEX_CHROME_BRIDGE_APPROVE` | Ignored. Final actions need a popup token. |
 
 Existing `~/codex-chrome-bridge` checkouts and `CODEX_CHROME_BRIDGE_*` scripts remain valid.
 
@@ -62,13 +62,7 @@ node bridge/control.mjs doctor
 
 Load `extension/` in `chrome://extensions` (Developer mode → Load unpacked). Open the target site in Chrome, then click **Arm tab** in the popup.
 
-Optional port alias:
-
-```bash
-AGENT_CHROME_BRIDGE_PORT=18474 npm run bridge
-```
-
-`CODEX_CHROME_BRIDGE_PORT` continues to work. If both are set, `AGENT_CHROME_BRIDGE_PORT` wins.
+The bridge listens only on `127.0.0.1:18474`. The extension does not follow another port. Run `node bridge/control.mjs doctor` and confirm the token fingerprint before arming. Mac-only manual steps live in [docs/MAC-SMOKE-CHECKLIST.md](docs/MAC-SMOKE-CHECKLIST.md); CI does not run them.
 
 ## Quality Checks
 
