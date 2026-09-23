@@ -3,14 +3,26 @@ import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BRIDGE_VERSION, COMMAND_STATUSES, PROTOCOL_VERSION } from "./protocol.mjs";
+import { BRIDGE_HOST, BRIDGE_PORT, BRIDGE_VERSION, COMMAND_STATUSES, DEFAULT_BRIDGE_URL, PROTOCOL_VERSION } from "./protocol.mjs";
+import { evaluateLease } from "./lease.mjs";
+import { QueueRejected, acceptFinalActionGrant, prepareQueuedCommand } from "./queue-policy.mjs";
+
+for (const name of ["AGENT_CHROME_BRIDGE_PORT", "CODEX_CHROME_BRIDGE_PORT"]) {
+  const requested = process.env[name];
+  if (requested && Number(requested) !== BRIDGE_PORT) {
+    console.error(
+      `[bridge] Refusing to listen on port ${requested}. The extension is pinned to ${DEFAULT_BRIDGE_URL}. Unset ${name}.`
+    );
+    process.exit(1);
+  }
+}
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
 const TOKEN_PATH = join(ROOT, ".bridge-token");
 const TOKEN_META_PATH = join(ROOT, ".bridge-token.meta.json");
-const PORT = Number(process.env.AGENT_CHROME_BRIDGE_PORT || process.env.CODEX_CHROME_BRIDGE_PORT || 18474);
-const HOST = "127.0.0.1";
+const PORT = BRIDGE_PORT;
+const HOST = BRIDGE_HOST;
 const BRIDGE_INSTANCE_ID = `br_${randomUUID()}`;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30000;
 const DEFAULT_LEASE_GRACE_MS = 5000;
@@ -33,7 +45,8 @@ const state = {
     extensionInstanceId: null,
     activeBridgeInstanceId: null
   },
-  events: []
+  events: [],
+  finalActionGrants: new Map()
 };
 
 async function writeTokenMeta(token, tokenStat, reason) {
@@ -157,7 +170,9 @@ function summarizeValue(value) {
   if (Array.isArray(value)) return value.map(summarizeValue);
   const copy = {};
   for (const [key, item] of Object.entries(value)) {
-    if (key === "dataUrl" && typeof item === "string") {
+    if (key === "approvalToken" || key === "token" || key === "tokenHash") {
+      copy[key] = "[redacted]";
+    } else if (key === "dataUrl" && typeof item === "string") {
       copy[key] = `[${Math.round(item.length / 1024)}KB data URL omitted]`;
     } else if ((key === "url" || key === "frameUrl") && typeof item === "string") {
       copy[key] = sanitizeUrl(item);
@@ -196,6 +211,7 @@ function commandSummary(command) {
     leaseExpiresAt: command.leaseExpiresAt,
     bridgeInstanceId: command.bridgeInstanceId,
     armSessionId: command.armSessionId,
+    queueId: command.queueId || null,
     error: command.error,
     result: command.result,
     lifecycle: command.lifecycle
@@ -216,6 +232,7 @@ function commandResult(command) {
     leaseExpiresAt: command.leaseExpiresAt,
     bridgeInstanceId: command.bridgeInstanceId,
     armSessionId: command.armSessionId,
+    queueId: command.queueId || null,
     error: command.error,
     result: command.result,
     lifecycle: command.lifecycle
@@ -251,10 +268,41 @@ function queuePayload() {
   };
 }
 
-function activeArmSessionId() {
+function activeArmed() {
   return state.latestExtensionState && state.latestExtensionState.armed
-    ? state.latestExtensionState.armed.armSessionId
+    ? state.latestExtensionState.armed
     : null;
+}
+
+function activeArmSessionId() {
+  const armed = activeArmed();
+  return armed ? armed.armSessionId : null;
+}
+
+function activeArmedOrigin() {
+  const armed = activeArmed();
+  return armed ? armed.origin || null : null;
+}
+
+function staleUnarmedQueue() {
+  const reason = "Extension disarmed. Arm the tab and enqueue again.";
+  for (const id of [...state.pendingIds]) {
+    const command = state.commands.get(id);
+    if (!command || command.status !== "queued" || !command.armSessionId) continue;
+    if (command.type === "status" || command.type === "stop" || command.type === "disarm") continue;
+    state.pendingIds = state.pendingIds.filter((pendingId) => pendingId !== command.id);
+    mark(command, "stale_arm", { finishedAt: nowIso(), error: reason });
+  }
+}
+
+function activeQueueEntries() {
+  const active = [];
+  for (const command of state.commands.values()) {
+    if (["queued", "leased", "running"].includes(command.status)) {
+      active.push({ queueId: command.queueId || null, type: command.type, id: command.id });
+    }
+  }
+  return active;
 }
 
 function mark(command, status, fields = {}) {
@@ -282,22 +330,35 @@ function expireCommands() {
 
 function queue(command) {
   expireCommands();
+  const prepared = prepareQueuedCommand(command, {
+    repoRoot: ROOT,
+    armSessionId: activeArmSessionId(),
+    armedOrigin: activeArmedOrigin(),
+    activeCommands: activeQueueEntries(),
+    grants: state.finalActionGrants,
+    now: nowMs()
+  });
+  if (prepared.grantHash) {
+    const grant = state.finalActionGrants.get(prepared.grantHash);
+    if (grant) grant.used = true;
+  }
   const createdAt = nowIso();
-  const id = command.id || `cmd_${randomUUID()}`;
-  const timeoutMs = Math.max(1, Number(command.timeoutMs || DEFAULT_COMMAND_TIMEOUT_MS));
+  const id = prepared.command.id || `cmd_${randomUUID()}`;
+  const timeoutMs = Math.max(1, Number(prepared.command.timeoutMs || DEFAULT_COMMAND_TIMEOUT_MS));
   const item = {
-    ...command,
+    ...prepared.command,
     id,
-    type: command.type || command.op,
-    op: command.op || command.type,
+    type: prepared.command.type,
+    op: prepared.command.op || prepared.command.type,
     createdAt,
     bridgeInstanceId: BRIDGE_INSTANCE_ID,
-    armSessionId: command.armSessionId || activeArmSessionId(),
+    armSessionId: prepared.command.type === "status" ? prepared.command.armSessionId || null : activeArmSessionId(),
     timeoutMs,
     deadlineAt: nowMs() + timeoutMs + DEFAULT_LEASE_GRACE_MS,
     status: "queued",
     lifecycle: [{ status: "queued", at: createdAt }]
   };
+  delete item.approvalToken;
   state.commands.set(item.id, item);
   state.pendingIds.push(item.id);
   pushEvent({ type: "queued", command: commandSummary(item) });
@@ -317,13 +378,19 @@ function leaseNextCommand(query) {
     const id = state.pendingIds.shift();
     const command = state.commands.get(id);
     if (!command || command.status !== "queued") continue;
-    if (command.armSessionId && extensionArmSessionId && command.armSessionId !== extensionArmSessionId) {
+    const decision = evaluateLease(command, extensionArmSessionId);
+    if (decision.action === "wait") {
+      state.pendingIds.unshift(id);
+      return null;
+    }
+    if (decision.action === "stale") {
       mark(command, "stale_arm", {
         finishedAt: nowIso(),
-        error: `Command targeted stale arm session ${command.armSessionId}. Active extension session is ${extensionArmSessionId}.`
+        error: decision.error
       });
       continue;
     }
+    if (decision.action !== "lease") continue;
     const leasedAt = nowIso();
     command.startedAt = leasedAt;
     command.leaseExpiresAt = nowMs() + command.timeoutMs + DEFAULT_LEASE_GRACE_MS;
@@ -346,8 +413,14 @@ function updateFromEvent(event) {
     state.extension.connected = true;
     state.extension.lastHelloAt = nowIso();
   }
+  if (event.type === "final-action-approval") {
+    acceptFinalActionGrant(state.finalActionGrants, event.payload, nowMs());
+  }
   if (event.type === "arm-state" || event.type === "armed" || event.type === "disarmed") {
     state.extension.connected = true;
+  }
+  if (event.type === "disarmed") {
+    staleUnarmedQueue();
   }
   if (event.type === "command-start" && event.payload && event.payload.id) {
     const command = state.commands.get(event.payload.id);
@@ -468,7 +541,19 @@ async function doctorPayload() {
       tokenFile,
       bridgeTokenFingerprint: state.tokenMeta.fingerprint,
       capabilities: state.latestExtensionState ? state.latestExtensionState.capabilities || null : null,
-      commandRoundTripHint: "Run `node bridge/control.mjs raw '{\"type\":\"status\"}'` to verify the extension command path."
+      commandRoundTripHint: "Run `node bridge/control.mjs raw '{\"type\":\"status\"}'` to verify the extension command path.",
+      listen: {
+        host: HOST,
+        port: PORT,
+        url: DEFAULT_BRIDGE_URL,
+        pinned: true,
+        note: "The extension only connects to this loopback address. A different port is refused. Run doctor and confirm tokenFile.matchesRunningBridge before arming. Whoever binds this port first can speak to the extension until you compare this fingerprint."
+      },
+      queue: {
+        sharedPerArm: true,
+        requiresArmSession: true,
+        note: "Commands are stamped with the active arm and a client queueId. A second queueId cannot enqueue while that arm has active work. flush remains a token-holder operator action."
+      }
     }
   };
 }
@@ -493,7 +578,9 @@ const server = http.createServer(async (req, res) => {
         bridgeInstanceId: BRIDGE_INSTANCE_ID,
         bridgeVersion: BRIDGE_VERSION,
         protocolVersion: PROTOCOL_VERSION,
-        startedAt: state.startedAt
+        startedAt: state.startedAt,
+        tokenFingerprint: state.tokenMeta.fingerprint,
+        listen: { host: HOST, port: PORT, pinned: true }
       });
       return;
     }
@@ -512,11 +599,12 @@ const server = http.createServer(async (req, res) => {
     if (req.method === "POST" && url.pathname === "/command") {
       if (!requireToken(req, res)) return;
       const command = await body(req);
-      if (!command.type && !command.op) {
-        json(res, 400, { ok: false, error: "Missing command type/op." });
-        return;
+      try {
+        json(res, 200, { ok: true, command: commandSummary(queue(command)) });
+      } catch (error) {
+        const statusCode = error instanceof QueueRejected ? error.statusCode : 400;
+        json(res, statusCode, { ok: false, error: error.message });
       }
-      json(res, 200, { ok: true, command: commandSummary(queue(command)) });
       return;
     }
 
@@ -582,9 +670,21 @@ const server = http.createServer(async (req, res) => {
   }
 });
 
+server.on("error", (error) => {
+  if (error.code === "EADDRINUSE") {
+    console.error(
+      `[bridge] ${DEFAULT_BRIDGE_URL} is already in use. Do not arm a tab until \`node bridge/control.mjs doctor\` reports tokenFile.matchesRunningBridge for this checkout. See the listener with: lsof -nP -iTCP:${PORT} -sTCP:LISTEN`
+    );
+    process.exit(1);
+  }
+  console.error(`[bridge] ${error.message}`);
+  process.exit(1);
+});
+
 server.listen(PORT, HOST, () => {
-  console.log(`[bridge] listening on http://${HOST}:${PORT}`);
+  console.log(`[bridge] listening on ${DEFAULT_BRIDGE_URL}`);
   console.log(`[bridge] instance: ${BRIDGE_INSTANCE_ID}`);
   console.log(`[bridge] token file: ${TOKEN_PATH}`);
   console.log(`[bridge] token fingerprint: ${state.tokenMeta.fingerprint}`);
+  console.log("[bridge] extension port is pinned; run doctor and compare this fingerprint before arming");
 });

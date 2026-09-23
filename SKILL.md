@@ -58,7 +58,7 @@ On Grok Bot, prefer this order. Details live in [GROK_BOT.md](GROK_BOT.md).
 6. Ask the user to **Arm tab** if needed.
 7. `inspect` / `click-ref` / `screenshot` (screenshot-first for Polaris static metrics).
 
-Optional port alias: `AGENT_CHROME_BRIDGE_PORT` (same as `CODEX_CHROME_BRIDGE_PORT`).
+The bridge port is pinned to `127.0.0.1:18474`. Do not set a different `AGENT_CHROME_BRIDGE_PORT` or `CODEX_CHROME_BRIDGE_PORT`.
 
 ## Runtime Version Check
 
@@ -84,7 +84,10 @@ npm run bridge
 - **Prefer `click-ref`.** A visible label is not the drawer or panel it names.
 - **Quote paths with spaces** in Mac Shell (`"/Users/You/Projects/Agent Chrome Bridge"`).
 - **CopyToBox** Mac screenshots after `screenshot` so the agent can see the PNG.
-- **Re-arm after bridge restart.**
+- **Re-arm after bridge restart.** Arm is origin-scoped. Cross-origin `nav` is rejected. `javascript:`, `file:`, and `chrome:` URLs are rejected.
+- **Screenshots and `--run-dir` stay inside `artifacts/`.** Absolute paths and `..` escapes fail.
+- **Final actions need the popup.** Click **Approve final action**, then pass `--approval-token`. `CODEX_CHROME_BRIDGE_APPROVE=1` does not grant submit, purchase, delete, send, or Enter.
+- **Run doctor before arming.** Confirm the listener on `127.0.0.1:18474` matches this checkout's token fingerprint.
 - **`connected: false` can be warm-up.** Poll `status` before failing the session.
 - **Empty-state promo ≠ inventory.** Partners Home **Create your first app** is not the Apps list. Go `/apps` before reporting inventory.
 - **CSV export click ≠ download.** Verify the file in Downloads or screenshot the save dialog.

@@ -59,13 +59,7 @@ cd "/Users/you/Projects/Agent Chrome Bridge"
 npm run bridge
 ```
 
-Optional port alias (listen port only):
-
-```bash
-AGENT_CHROME_BRIDGE_PORT=18474 npm run bridge
-```
-
-`CODEX_CHROME_BRIDGE_PORT` still works. Leave the process running in that shell.
+Leave the process running in that shell. The extension only talks to `127.0.0.1:18474`. A different `AGENT_CHROME_BRIDGE_PORT` or `CODEX_CHROME_BRIDGE_PORT` is refused.
 
 ### 4. Doctor
 
@@ -91,7 +85,9 @@ Read `connected` and `armed`.
 
 The user must click **Arm tab** in the Agent Chrome Bridge popup. Agents cannot arm a tab remotely. Tell the user which window and URL to arm.
 
-**One armed tab.** The bridge drives a single user-armed tab. If the task needs Partners or Dev Dashboard (Cloudflare-gated), that tab is the Mac-bridge surface. For non-Cloudflare hosts (docs, Box, generic HTTPS), use Box / CopyToBox / ordinary fetch — do not keep swapping the armed tab mid-task to chase every URL.
+**One armed tab, one origin.** The bridge drives a single user-armed tab and stays on that http(s) origin. Cross-origin navigation is rejected. If the task needs Partners or Dev Dashboard (Cloudflare-gated), that tab is the Mac-bridge surface. For non-Cloudflare hosts (docs, Box, generic HTTPS), use Box / CopyToBox / ordinary fetch — do not keep swapping the armed tab mid-task to chase every URL.
+
+Before arming, `doctor` must show `tokenFile.matchesRunningBridge: true`. Compare that fingerprint with the popup after **Arm tab**. If doctor cannot authenticate, do not arm. Submit, purchase, delete, send, and Enter need **Approve final action** in the popup and `--approval-token`. Screenshot paths stay inside `artifacts/`.
 
 ### 7. Inspect, click-ref, screenshot
 
@@ -128,9 +124,9 @@ If screenshot fails with a Chrome permission / CDP error but `inspect` still wor
 
 | Variable | Role |
 | --- | --- |
-| `CODEX_CHROME_BRIDGE_PORT` | Bridge listen port (legacy name) |
-| `AGENT_CHROME_BRIDGE_PORT` | Optional alias for the same port |
-| `CODEX_CHROME_BRIDGE_URL` | CLI/SDK base URL, default `http://127.0.0.1:18474` |
+| `CODEX_CHROME_BRIDGE_PORT` | Must be unset or `18474`. Other ports are refused. |
+| `AGENT_CHROME_BRIDGE_PORT` | Same pin. The extension does not follow a custom port. |
+| `CODEX_CHROME_BRIDGE_URL` | Must stay `http://127.0.0.1:18474` |
 
 Do not rename `x-codex-bridge-token` or the extension message source `codex-chrome-bridge`. Those are wire compatibility, not the product name.
 

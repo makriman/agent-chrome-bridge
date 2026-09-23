@@ -19,5 +19,6 @@ function send(action) {
 document.getElementById("arm").addEventListener("click", () => send("arm"));
 document.getElementById("status").addEventListener("click", () => send("status"));
 document.getElementById("disarm").addEventListener("click", () => send("disarm"));
+document.getElementById("approve").addEventListener("click", () => send("approve-final"));
 
 send("status");

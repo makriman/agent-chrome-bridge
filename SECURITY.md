@@ -32,6 +32,12 @@ If you are unsure whether something is security-sensitive, report it privately f
 - Keep model provider keys and integration credentials outside client bundles.
 - Avoid logging personal data, private content, or raw secrets.
 
+## Local bridge limits
+
+The control server binds to `127.0.0.1:18474` only. Screenshot and workflow writes must stay inside `artifacts/`. An arm is limited to one http(s) origin. Submit, purchase, delete, send, post, pay, and Enter are blocked until the extension popup mints a one-time approval token. `CODEX_CHROME_BRIDGE_APPROVE` does not grant those actions.
+
+`doctor` is the check that the process on that port holds this checkout's bridge token. Run it before arming. A different local program that binds the port first can still speak to the extension; do not arm when doctor fails.
+
 ## Supported Versions
 
 Security fixes target the current default branch unless maintainers announce a release policy.
