@@ -35,3 +35,7 @@ If you are unsure whether something is security-sensitive, report it privately f
 ## Supported Versions
 
 Security fixes target the current default branch unless maintainers announce a release policy.
+
+## Local bridge review
+
+A point-in-time review of the localhost bridge and extension is in [docs/SECURITY-REVIEW-2026-09-23.md](docs/SECURITY-REVIEW-2026-09-23.md). It is findings for the maintainer, not an invitation to probe machines you do not own. Report new issues privately using the process above. Do not include `.bridge-token` contents, cookies, or session dumps in the report.

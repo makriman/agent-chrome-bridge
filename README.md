@@ -82,6 +82,10 @@ npm run check
 - The extension should only be loaded from a trusted local checkout.
 - Pack the extension with `npm run zip` (writes `dist/agent-chrome-bridge-extension.zip`).
 
+## Agents
+
+Cloud and local agents should read [AGENTS.md](AGENTS.md) before changing this repo. The bridge is loopback-only and the user arms one Chrome tab. Do not ask for cookies or `.bridge-token` contents.
+
 ## Contributing
 
 Contributions are welcome. The best contributions are specific, tested, and grounded in the product mission. Good places to help include documentation, accessibility, tests, bug reports, UI polish, data validation, and safer agent behavior.
