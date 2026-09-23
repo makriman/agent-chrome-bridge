@@ -74,7 +74,7 @@
   </head>
   <body>
     <h1>Agent Chrome Bridge</h1>
-    <p>Give Grok Bot and other agents your Chrome. Pair this browser session, then arm one tab for 30 minutes. The extension token stays in session storage and is cleared when you reload the extension — run <code>node bridge/control.mjs pair</code> again after a reload. <code>doctor</code> must match this checkout before you arm.</p>
+    <p>Give Grok Bot and other agents your Chrome. Pair this browser session, then arm one tab for 30 minutes. The arm stays on that tab's http(s) origin. The extension token stays in session storage and is cleared when you reload the extension — run <code>node bridge/control.mjs pair</code> again after a reload. <code>doctor</code> must match this checkout before you arm.</p>
     <label for="pair-code">Pairing code</label>
     <input id="pair-code" autocomplete="off" spellcheck="false" placeholder="Paste the code from control.mjs pair">
     <div class="row">
@@ -85,6 +85,9 @@
       <button id="arm">Arm tab</button>
       <button id="status" class="secondary">Status</button>
       <button id="disarm" class="danger">Stop</button>
+    </div>
+    <div class="row">
+      <button id="approve" class="secondary">Approve final action</button>
     </div>
     <pre id="output">Ready.</pre>
     <script type="module" src="popup.js"></script>

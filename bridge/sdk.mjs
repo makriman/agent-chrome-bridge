@@ -1,13 +1,17 @@
 import { createHash, randomUUID } from "node:crypto";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
-import { dirname, isAbsolute, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BRIDGE_VERSION, PROTOCOL_VERSION, TERMINAL_STATUSES as TERMINAL_STATUS_LIST } from "./protocol.mjs";
+import { assertLoopbackBridgeUrl } from "./bridge-url.mjs";
+import { guardOutgoingCommand } from "./command-guard.mjs";
+import { confineArtifactsFile, confineArtifactsPath } from "./paths.mjs";
+import { BRIDGE_VERSION, DEFAULT_BRIDGE_URL, PROTOCOL_VERSION, TERMINAL_STATUSES as TERMINAL_STATUS_LIST } from "./protocol.mjs";
+import { isFinalActionCommand } from "../extension/final-actions.js";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
 const TOKEN_PATH = join(ROOT, ".bridge-token");
-const BRIDGE_URL = process.env.CODEX_CHROME_BRIDGE_URL || "http://127.0.0.1:18474";
+const BRIDGE_URL = process.env.CODEX_CHROME_BRIDGE_URL || DEFAULT_BRIDGE_URL;
 const TERMINAL_STATUSES = new Set(TERMINAL_STATUS_LIST);
 
 export class BridgeCommandError extends Error {
@@ -55,7 +59,20 @@ function hashApproval(approval) {
 
 function outputPath(root, path) {
   if (!path) return null;
-  return isAbsolute(path) ? path : resolve(root || ROOT, path);
+  return confineArtifactsPath(root || ROOT, path);
+}
+
+function redactCommand(command) {
+  if (!command || typeof command !== "object" || !command.approvalToken) return command;
+  return { ...command, approvalToken: "[redacted]" };
+}
+
+function artifactRelative(root, runDir, leaf) {
+  const rel = relative(root, join(runDir, leaf));
+  if (!rel || rel === ".." || rel.startsWith(`..${sep}`) || isAbsolute(rel)) {
+    throw new Error("Run directory is outside the repo, so screenshots cannot be stored there.");
+  }
+  return rel;
 }
 
 function fakeStatusResult() {
@@ -116,7 +133,7 @@ function dryRunResultFor(command, root) {
   if (command.type === "status") return fakeStatusResult();
   return {
     dryRun: true,
-    command
+    command: redactCommand(command)
   };
 }
 
@@ -127,12 +144,15 @@ export class BrowserClient {
 
   configure(options = {}) {
     this.bridgeUrl = options.bridgeUrl || this.bridgeUrl || BRIDGE_URL;
+    assertLoopbackBridgeUrl(this.bridgeUrl);
     this.tokenPath = options.tokenPath || this.tokenPath || TOKEN_PATH;
     this.root = options.root || this.root || ROOT;
     this.runDir = options.runDir || this.runDir || null;
     this.dryRun = Boolean(options.dryRun ?? this.dryRun);
     this.offline = Boolean(options.offline ?? this.offline);
     this.approve = Boolean(options.approve ?? this.approve);
+    this.approvalToken = options.approvalToken || this.approvalToken || null;
+    this.queueId = options.queueId || this.queueId || `sdk_${randomUUID()}`;
     this.commandTimeoutMs = Number(options.commandTimeoutMs || this.commandTimeoutMs || 30000);
     this.eventSink = options.eventSink || this.eventSink || (() => {});
     return this;
@@ -233,16 +253,21 @@ export class BrowserClient {
 
   async command(command, options = {}) {
     const timeoutMs = Number(command.timeoutMs || options.timeoutMs || this.commandTimeoutMs);
-    const payload = {
+    let payload = {
       ...command,
       timeoutMs,
+      queueId: command.queueId || this.queueId,
       client: {
         name: "codex-chrome-bridge-sdk",
         version: BRIDGE_VERSION,
         ...(command.client || {})
       }
     };
-    if ((this.dryRun && command.type !== "status") || this.offline) {
+    if (this.approvalToken && !payload.approvalToken && isFinalActionCommand(payload)) {
+      payload.approvalToken = this.approvalToken;
+    }
+    payload = guardOutgoingCommand(payload, { repoRoot: this.root });
+    if ((this.dryRun && payload.type !== "status") || this.offline) {
       const dryRunCommand = {
         id: `dry_${randomUUID()}`,
         type: payload.type || payload.op,
@@ -251,10 +276,10 @@ export class BrowserClient {
         result: dryRunResultFor(payload, this.root),
         lifecycle: [{ status: "succeeded", at: nowIso(), reason: "dry-run" }]
       };
-      this.emit("command_dry_run", { command: dryRunCommand });
+      this.emit("command_dry_run", { command: redactCommand(dryRunCommand) });
       return dryRunCommand;
     }
-    this.emit("command_enqueue", { command: payload });
+    this.emit("command_enqueue", { command: redactCommand(payload) });
     const queued = await this.enqueue(payload);
     this.emit("command_queued", { command: queued });
     const result = await this.waitForResult(queued.id, timeoutMs + 10000);
@@ -268,8 +293,7 @@ export class BrowserClient {
     if (!command || !command.result || !command.result.dataUrl || !command.output) return;
     const [, meta, base64] = command.result.dataUrl.match(/^data:(.+);base64,(.*)$/) || [];
     if (!base64) return;
-    const target = outputPath(this.root, command.output);
-    await mkdir(dirname(target), { recursive: true });
+    const target = await confineArtifactsFile(this.root, command.output);
     await writeFile(target, Buffer.from(base64, "base64"));
     command.result = {
       ...command.result,
@@ -301,11 +325,19 @@ export class BrowserClient {
       await mkdir(approvalDir, { recursive: true });
       await writeFile(join(approvalDir, `${approval.id}.json`), JSON.stringify(approval, null, 2));
     }
-    if (this.approve || process.env.CODEX_CHROME_BRIDGE_APPROVE === "1") {
+    if (process.env.CODEX_CHROME_BRIDGE_APPROVE === "1") {
+      this.emit("approval_env_ignored", {
+        approval,
+        note: "CODEX_CHROME_BRIDGE_APPROVE does not grant workflow pauses or bridge final actions."
+      });
+    }
+    if (this.approve) {
       const token = {
         approvalId: approval.id,
         approvalToken: approval.actionHash,
-        approvedAt: nowIso()
+        approvedAt: nowIso(),
+        bridgeFinalAction: false,
+        note: "Workflow pause only. Submit, purchase, delete, send, and Enter still need the extension popup token."
       };
       this.emit("approval_granted", { approval, token });
       return token;
@@ -357,7 +389,9 @@ export class BrowserTab {
   }
 
   async screenshot(output = null) {
-    const target = output || (this.client.runDir ? join(this.client.runDir, "screenshots", `${Date.now()}.png`) : "artifacts/screenshot.png");
+    const target = output || (this.client.runDir
+      ? artifactRelative(this.client.root, this.client.runDir, join("screenshots", `${Date.now()}.png`))
+      : "artifacts/screenshot.png");
     try {
       const command = await this.client.command({ type: "screenshot", output: target, profile: this.profile });
       return command.result;

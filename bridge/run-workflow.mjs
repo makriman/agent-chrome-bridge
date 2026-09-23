@@ -1,7 +1,9 @@
 import { copyFile, mkdir, readFile, readdir, writeFile } from "node:fs/promises";
-import { basename, dirname, extname, join, resolve } from "node:path";
+import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { randomUUID } from "node:crypto";
 import { ApprovalRequired, BrowserClient, configureBrowser } from "./sdk.mjs";
+import { assertArtifactsRealpath, artifactsDir, confineArtifactsDir, isInsideDir } from "./paths.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
@@ -25,14 +27,19 @@ function usage() {
 
 Options:
   --name <name>       Human-readable run name.
-  --run-dir <path>    Existing/new run directory.
+  --run-dir <path>    Run directory inside artifacts/, relative to the repo.
   --resume            Resume a paused or failed run.
   --dry-run           Emit steps without sending browser commands.
   --offline           Do not call the bridge at all; implies dry-run behavior.
   --plan              Print workflow metadata without running steps.
-  --approve           Auto-grant approval gates for this run.
+  --approve           Skip the workflow pause only. Does not authorize final actions.
+  --approval-token <token>
+                      Popup token for submit/purchase/delete/send/Enter.
   --timeout <ms>      Default command timeout, default 30000.
-  --quiet             Do not mirror JSONL events to stdout.`);
+  --quiet             Do not mirror JSONL events to stdout.
+
+--run-dir must stay inside artifacts/. Absolute paths and .. escapes are rejected.
+CODEX_CHROME_BRIDGE_APPROVE is ignored.`);
 }
 
 function nowIso() {
@@ -63,13 +70,20 @@ async function latestRunDir(runName) {
   return candidates[0] || null;
 }
 
+function assertDefaultRunDir(runDir) {
+  if (!isInsideDir(artifactsDir(ROOT), runDir) || resolve(runDir) === resolve(artifactsDir(ROOT))) {
+    throw new Error("Run directory must stay inside artifacts/.");
+  }
+  return runDir;
+}
+
 async function prepareRunDir(workflowPath, runName) {
-  if (flagValue("--run-dir")) return resolve(ROOT, flagValue("--run-dir"));
+  if (flagValue("--run-dir")) return confineArtifactsDir(ROOT, flagValue("--run-dir"));
   if (flag("--resume")) {
     const latest = await latestRunDir(runName);
-    if (latest) return latest;
+    if (latest) return assertArtifactsRealpath(ROOT, assertDefaultRunDir(latest));
   }
-  return join(RUNS_DIR, `${timestampSlug()}_${slug(runName)}`);
+  return assertArtifactsRealpath(ROOT, assertDefaultRunDir(join(RUNS_DIR, `${timestampSlug()}_${slug(runName)}`)));
 }
 
 async function loadState(statePath) {
@@ -171,12 +185,15 @@ async function main() {
     await Promise.allSettled(Array.from(pendingSinkEvents));
   }
 
+  const runQueueId = `run_${randomUUID()}`;
   const client = new BrowserClient({
     runDir,
     root: ROOT,
     dryRun: flag("--dry-run") || flag("--offline"),
     offline: flag("--offline"),
     approve: flag("--approve"),
+    approvalToken: flagValue("--approval-token"),
+    queueId: runQueueId,
     commandTimeoutMs: Number(flagValue("--timeout", 30000)),
     eventSink: sink
   });
@@ -186,6 +203,8 @@ async function main() {
     dryRun: flag("--dry-run") || flag("--offline"),
     offline: flag("--offline"),
     approve: flag("--approve"),
+    approvalToken: flagValue("--approval-token"),
+    queueId: runQueueId,
     commandTimeoutMs: Number(flagValue("--timeout", 30000)),
     eventSink: sink
   });
@@ -332,7 +351,7 @@ async function captureFailureArtifacts(client, runDir, stepId) {
   try {
     await client.command({
       type: "screenshot",
-      output: join(runDir, "screenshots", `failure-${safeStep}.png`),
+      output: relative(ROOT, join(runDir, "screenshots", `failure-${safeStep}.png`)),
       timeoutMs: 10000
     });
   } catch (error) {
@@ -365,7 +384,9 @@ async function runJsonStep(tab, step, context) {
     }
     return result;
   }
-  if (step.op === "screenshot") return tab.screenshot(step.output || join(context.runDir, "screenshots", `${Date.now()}.png`));
+  if (step.op === "screenshot") {
+    return tab.screenshot(step.output || relative(ROOT, join(context.runDir, "screenshots", `${Date.now()}.png`)));
+  }
   if (step.op === "click") return runClickStep(tab, step);
   if (step.op === "fill") return runFillStep(tab, step);
   if (step.op === "type") return tab.type(step.text || "");

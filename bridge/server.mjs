@@ -4,14 +4,16 @@ import { realpathSync } from "node:fs";
 import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BRIDGE_VERSION, COMMAND_STATUSES, PROTOCOL_VERSION, TERMINAL_STATUSES } from "./protocol.mjs";
+import { BRIDGE_HOST, BRIDGE_PORT, BRIDGE_VERSION, COMMAND_STATUSES, DEFAULT_BRIDGE_URL, PROTOCOL_VERSION, TERMINAL_STATUSES } from "./protocol.mjs";
 import { chmodOwnerOnly, secretEquals } from "./token-file.mjs";
 import { pairedSessionHeaders, sessionProofHex, validProofNonce } from "../extension/extension-credential.mjs";
 import { boundScreenshotResult, MAX_JSON_BODY_BYTES, MAX_SCREENSHOT_CHARS, releaseScreenshotResult } from "../extension/resource-bounds.mjs";
+import { evaluateLease } from "./lease.mjs";
+import { QueueRejected, acceptFinalActionGrant, prepareQueuedCommand } from "./queue-policy.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
-const HOST = "127.0.0.1";
+const HOST = BRIDGE_HOST;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30000;
 const DEFAULT_LEASE_GRACE_MS = 5000;
 const MAX_EVENTS = 400;
@@ -154,7 +156,9 @@ function summarizeValue(value) {
   if (Array.isArray(value)) return value.map(summarizeValue);
   const copy = {};
   for (const [key, item] of Object.entries(value)) {
-    if (key === "dataUrl" && typeof item === "string") {
+    if (key === "approvalToken" || key === "token" || key === "tokenHash") {
+      copy[key] = "[redacted]";
+    } else if (key === "dataUrl" && typeof item === "string") {
       copy[key] = `[${Math.round(item.length / 1024)}KB data URL omitted]`;
     } else if ((key === "url" || key === "frameUrl") && typeof item === "string") {
       copy[key] = sanitizeUrl(item);
@@ -177,9 +181,7 @@ function sanitizeUrl(value) {
 }
 
 export async function startBridge(options = {}) {
-  const port = options.port === undefined
-    ? Number(process.env.AGENT_CHROME_BRIDGE_PORT || process.env.CODEX_CHROME_BRIDGE_PORT || 18474)
-    : options.port;
+  const port = options.port === undefined ? BRIDGE_PORT : options.port;
   const root = options.root || ROOT;
   const tokenPath = join(root, ".bridge-token");
   const tokenMetaPath = join(root, ".bridge-token.meta.json");
@@ -216,7 +218,8 @@ export async function startBridge(options = {}) {
         : null,
       activeBridgeInstanceId: null
     },
-    events: []
+    events: [],
+    finalActionGrants: new Map()
   };
 
   function pushEvent(event) {
@@ -239,6 +242,7 @@ export async function startBridge(options = {}) {
       deadlineAt: command.deadlineAt,
       bridgeInstanceId: command.bridgeInstanceId,
       armSessionId: command.armSessionId,
+      queueId: command.queueId || null,
       error: command.error,
       result: command.result,
       lifecycle: command.lifecycle
@@ -260,6 +264,7 @@ export async function startBridge(options = {}) {
       deadlineAt: command.deadlineAt,
       bridgeInstanceId: command.bridgeInstanceId,
       armSessionId: command.armSessionId,
+      queueId: command.queueId || null,
       error: command.error,
       result: command.result,
       lifecycle: command.lifecycle
@@ -295,10 +300,41 @@ export async function startBridge(options = {}) {
     };
   }
 
-  function activeArmSessionId() {
+  function activeArmed() {
     return state.latestExtensionState && state.latestExtensionState.armed
-      ? state.latestExtensionState.armed.armSessionId
+      ? state.latestExtensionState.armed
       : null;
+  }
+
+  function activeArmSessionId() {
+    const armed = activeArmed();
+    return armed ? armed.armSessionId : null;
+  }
+
+  function activeArmedOrigin() {
+    const armed = activeArmed();
+    return armed ? armed.origin || null : null;
+  }
+
+  function staleUnarmedQueue() {
+    const reason = "Extension disarmed. Arm the tab and enqueue again.";
+    for (const id of [...state.pendingIds]) {
+      const command = state.commands.get(id);
+      if (!command || command.status !== "queued" || !command.armSessionId) continue;
+      if (command.type === "status" || command.type === "stop" || command.type === "disarm") continue;
+      state.pendingIds = state.pendingIds.filter((pendingId) => pendingId !== command.id);
+      mark(command, "stale_arm", { finishedAt: nowIso(), error: reason });
+    }
+  }
+
+  function activeQueueEntries() {
+    const active = [];
+    for (const command of state.commands.values()) {
+      if (["queued", "leased", "running"].includes(command.status)) {
+        active.push({ queueId: command.queueId || null, type: command.type, id: command.id });
+      }
+    }
+    return active;
   }
 
   function mark(command, status, fields = {}) {
@@ -326,22 +362,35 @@ export async function startBridge(options = {}) {
 
   function queue(command) {
     expireCommands();
+    const prepared = prepareQueuedCommand(command, {
+      repoRoot: root,
+      armSessionId: activeArmSessionId(),
+      armedOrigin: activeArmedOrigin(),
+      activeCommands: activeQueueEntries(),
+      grants: state.finalActionGrants,
+      now: nowMs()
+    });
+    if (prepared.grantHash) {
+      const grant = state.finalActionGrants.get(prepared.grantHash);
+      if (grant) grant.used = true;
+    }
     const createdAt = nowIso();
-    const id = command.id || `cmd_${randomUUID()}`;
-    const timeoutMs = Math.max(1, Number(command.timeoutMs || DEFAULT_COMMAND_TIMEOUT_MS));
+    const id = prepared.command.id || `cmd_${randomUUID()}`;
+    const timeoutMs = Math.max(1, Number(prepared.command.timeoutMs || DEFAULT_COMMAND_TIMEOUT_MS));
     const item = {
-      ...command,
+      ...prepared.command,
       id,
-      type: command.type || command.op,
-      op: command.op || command.type,
+      type: prepared.command.type,
+      op: prepared.command.op || prepared.command.type,
       createdAt,
       bridgeInstanceId,
-      armSessionId: command.armSessionId || activeArmSessionId(),
+      armSessionId: prepared.command.type === "status" ? prepared.command.armSessionId || null : activeArmSessionId(),
       timeoutMs,
       deadlineAt: nowMs() + timeoutMs + DEFAULT_LEASE_GRACE_MS,
       status: "queued",
       lifecycle: [{ status: "queued", at: createdAt }]
     };
+    delete item.approvalToken;
     state.commands.set(item.id, item);
     state.pendingIds.push(item.id);
     pushEvent({ type: "queued", command: commandSummary(item) });
@@ -371,13 +420,19 @@ export async function startBridge(options = {}) {
       const id = state.pendingIds.shift();
       const command = state.commands.get(id);
       if (!command || command.status !== "queued") continue;
-      if (command.armSessionId && extensionArmSessionId && command.armSessionId !== extensionArmSessionId) {
+      const decision = evaluateLease(command, extensionArmSessionId);
+      if (decision.action === "wait") {
+        state.pendingIds.unshift(id);
+        return null;
+      }
+      if (decision.action === "stale") {
         mark(command, "stale_arm", {
           finishedAt: nowIso(),
-          error: `Command targeted stale arm session ${command.armSessionId}. Active extension session is ${extensionArmSessionId}.`
+          error: decision.error
         });
         continue;
       }
+      if (decision.action !== "lease") continue;
       const leasedAt = nowIso();
       command.startedAt = leasedAt;
       command.leaseExpiresAt = capLeaseExpiresAt(command, nowMs());
@@ -396,9 +451,13 @@ export async function startBridge(options = {}) {
     }
     if (event.state && typeof event.state === "object") state.latestExtensionState = event.state;
     if (event.type === "hello") state.extension.lastHelloAt = nowIso();
+    if (event.type === "final-action-approval") {
+      acceptFinalActionGrant(state.finalActionGrants, event.payload, nowMs());
+    }
     if (event.type === "arm-state" || event.type === "armed" || event.type === "disarmed") {
       state.extension.connected = true;
     }
+    if (event.type === "disarmed") staleUnarmedQueue();
 
     const payload = event.payload || {};
     if ((event.type === "command-start" || event.type === "command-heartbeat" || event.type === "command-result") && payload.id) {
@@ -608,7 +667,13 @@ export async function startBridge(options = {}) {
         listen: {
           host: HOST,
           port: server.address() && typeof server.address() === "object" ? server.address().port : port,
-          pinned: HOST === "127.0.0.1" && (server.address() && server.address().port) === 18474
+          pinned: HOST === BRIDGE_HOST && (server.address() && server.address().port) === BRIDGE_PORT,
+          note: "The extension only connects to http://127.0.0.1:18474. A different port is refused. Run doctor and confirm tokenFile.matchesRunningBridge before arming. Whoever binds this port first can speak to the extension until you compare this fingerprint."
+        },
+        queue: {
+          sharedPerArm: true,
+          requiresArmSession: true,
+          note: "Commands are stamped with the active arm and a client queueId. A second queueId cannot enqueue while that arm has active work. flush remains a token-holder operator action."
         },
         commandRoundTripHint: state.pairedExtensionInstanceId
           ? "Run `node bridge/control.mjs raw '{\"type\":\"status\"}'` to verify the extension command path."
@@ -701,7 +766,12 @@ export async function startBridge(options = {}) {
           bridgeVersion: BRIDGE_VERSION,
           protocolVersion: PROTOCOL_VERSION,
           startedAt: state.startedAt,
-          tokenFingerprint: state.tokenMeta.fingerprint
+          tokenFingerprint: state.tokenMeta.fingerprint,
+          listen: {
+            host: HOST,
+            port: server.address() && typeof server.address() === "object" ? server.address().port : port,
+            pinned: HOST === BRIDGE_HOST && server.address() && server.address().port === BRIDGE_PORT
+          }
         });
         return;
       }
@@ -773,11 +843,12 @@ export async function startBridge(options = {}) {
       if (req.method === "POST" && url.pathname === "/command") {
         if (!requireOperatorToken(req, res)) return;
         const command = await readBody(req, maxBodyBytes);
-        if (!command.type && !command.op) {
-          json(res, 400, { ok: false, error: "Missing command type/op." });
-          return;
+        try {
+          json(res, 200, { ok: true, command: commandSummary(queue(command)) });
+        } catch (error) {
+          if (!(error instanceof QueueRejected)) throw error;
+          json(res, error.statusCode, { ok: false, error: error.message });
         }
-        json(res, 200, { ok: true, command: commandSummary(queue(command)) });
         return;
       }
 
@@ -883,6 +954,7 @@ export async function startBridge(options = {}) {
     console.log(`[bridge] token file: ${tokenPath}`);
     console.log(`[bridge] token fingerprint: ${state.tokenMeta.fingerprint}`);
     console.log(`[bridge] extension session fingerprint: ${state.extensionTokenMeta.fingerprint}`);
+    console.log(`[bridge] listening only on ${DEFAULT_BRIDGE_URL}; compare this fingerprint with doctor before arming`);
   }
 
   return {
@@ -896,6 +968,30 @@ export async function startBridge(options = {}) {
   };
 }
 
+function refuseUnpinnedPort() {
+  for (const name of ["AGENT_CHROME_BRIDGE_PORT", "CODEX_CHROME_BRIDGE_PORT"]) {
+    const requested = process.env[name];
+    if (requested && Number(requested) !== BRIDGE_PORT) {
+      console.error(
+        `[bridge] Refusing to listen on port ${requested}. The extension is pinned to ${DEFAULT_BRIDGE_URL}. Unset ${name}.`
+      );
+      process.exit(1);
+    }
+  }
+}
+
 if (invokedDirectly()) {
-  await startBridge({ quiet: false });
+  refuseUnpinnedPort();
+  try {
+    await startBridge({ quiet: false, port: BRIDGE_PORT });
+  } catch (error) {
+    if (error && error.code === "EADDRINUSE") {
+      console.error(
+        `[bridge] ${DEFAULT_BRIDGE_URL} is already in use. Do not arm a tab until \`node bridge/control.mjs doctor\` reports tokenFile.matchesRunningBridge for this checkout. See the listener with: lsof -nP -iTCP:${BRIDGE_PORT} -sTCP:LISTEN`
+      );
+    } else {
+      console.error(`[bridge] ${error && error.message ? error.message : error}`);
+    }
+    process.exit(1);
+  }
 }

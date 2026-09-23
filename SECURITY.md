@@ -32,7 +32,7 @@ The bridge listens on `127.0.0.1:18474`. Protocol is v3. CLI routes use `x-codex
 
 `node bridge/control.mjs doctor` fails closed unless this checkout's token fingerprint matches the live listener, the listener file matches the loaded token, the port is `127.0.0.1:18474`, the protocol matches, and `doctor.extensionSession.paired` is true. It does not print secrets. The CLI does not overwrite `.bridge-token` when it cannot read the file.
 
-Screenshot and workflow paths belong under `artifacts/`. The path, origin-arm, and loopback draft rejects escapes, pins an arm to one http(s) origin, and requires popup **Approve final action** for submit, purchase, delete, send, post, pay, and Enter. `CODEX_CHROME_BRIDGE_APPROVE` is not that approval. Mac smoke is a human checklist, [docs/MAC-SMOKE-CHECKLIST.md](docs/MAC-SMOKE-CHECKLIST.md). CI does not run it.
+Screenshot and workflow paths belong under `artifacts/`. Escapes are rejected, an arm is pinned to one http(s) origin, and submit, purchase, delete, send, post, pay, and Enter require the popup **Approve final action** token. `CODEX_CHROME_BRIDGE_APPROVE` is not that approval. Mac smoke is a human checklist, [docs/MAC-SMOKE-CHECKLIST.md](docs/MAC-SMOKE-CHECKLIST.md). CI does not run it.
 
 Findings and residual status: [docs/SECURITY-REVIEW-2026-09-23.md](docs/SECURITY-REVIEW-2026-09-23.md) and [AGENTS.md](AGENTS.md).
 
@@ -47,6 +47,12 @@ Operator and extension tokens are compared with `timingSafeEqual`. Loading eithe
 - Never commit env files, provider keys, tokens, database dumps, or production user data.
 - Keep model provider keys and integration credentials outside client bundles.
 - Avoid logging personal data, private content, or raw secrets.
+
+## Local bridge limits
+
+The control server binds to `127.0.0.1:18474` only. Screenshot and workflow writes must stay inside `artifacts/`. An arm is limited to one http(s) origin. Submit, purchase, delete, send, post, pay, and Enter are blocked until the extension popup mints a one-time approval token. `CODEX_CHROME_BRIDGE_APPROVE` does not grant those actions.
+
+`doctor` is the check that the process on that port holds this checkout's bridge token. Run it before arming. A different local program that binds the port first can still speak to the extension; do not arm when doctor fails.
 
 ## Supported Versions
 
