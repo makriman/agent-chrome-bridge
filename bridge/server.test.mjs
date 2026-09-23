@@ -4,6 +4,7 @@ import { mkdtemp, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import test from "node:test";
+import { proofMatches } from "../extension/extension-credential.mjs";
 import { startBridge } from "./server.mjs";
 
 const EXTENSION_ID = "ext_11111111-1111-4111-8111-111111111111";
@@ -373,5 +374,56 @@ test("loopback responses do not enable cross-origin or private-network reads", a
       body: { type: "hello", payload: { extensionInstanceId: EXTENSION_ID } }
     });
     assert.equal(armed.status, 403);
+  });
+});
+
+test("public status hides the token fingerprint and active command", async () => {
+  await withBridge(async (bridge) => {
+    const status = await request(bridge, "/public-status");
+    assert.equal(status.status, 200);
+    assert.equal(Object.hasOwn(status.payload, "tokenFingerprint"), false);
+    assert.equal(Object.hasOwn(status.payload, "activeCommand"), false);
+    assert.equal(status.payload.protocolVersion, 3);
+    assert.equal(JSON.stringify(status.payload).includes(bridge.token), false);
+    assert.equal(JSON.stringify(status.payload).includes(bridge.extensionToken), false);
+
+    const doctor = await request(bridge, "/doctor", {
+      headers: { "x-codex-bridge-token": bridge.token }
+    });
+    assert.equal(doctor.status, 200);
+    assert.equal(doctor.payload.doctor.extensionSession.paired, false);
+    assert.equal(doctor.payload.doctor.extensionSession.header, "x-codex-bridge-extension-token");
+    assert.equal(doctor.payload.doctor.listen.host, "127.0.0.1");
+    assert.equal(doctor.payload.doctor.listen.pinned, false);
+    assert.equal(doctor.payload.tokenFingerprint, doctor.payload.doctor.bridgeTokenFingerprint);
+  });
+});
+
+test("paired poll proves the session and session-proof does not echo the extension token", async () => {
+  await withBridge(async (bridge) => {
+    const denied = await request(bridge, `/poll?extensionInstanceId=${EXTENSION_ID}`);
+    assert.equal(denied.status, 403);
+    assert.equal(denied.headers["x-codex-bridge-extension-session"], undefined);
+
+    const session = await pair(bridge);
+    const nonce = "ab".repeat(32);
+    const proof = await request(bridge, `/session-proof?nonce=${nonce}`);
+    assert.equal(proof.status, 200);
+    assert.equal(JSON.stringify(proof.payload).includes(bridge.extensionToken), false);
+    assert.equal(await proofMatches(session.extensionToken, nonce, proof.payload.proof), true);
+    assert.equal(proof.payload.extensionToken, undefined);
+
+    const polled = await request(bridge, `/poll?extensionInstanceId=${EXTENSION_ID}`, {
+      headers: { "x-codex-bridge-extension-token": session.extensionToken }
+    });
+    assert.equal(polled.status, 200);
+    assert.equal(polled.headers["x-codex-bridge-protocol"], "3");
+    assert.equal(polled.headers["x-codex-bridge-extension-session"], "paired");
+
+    const doctor = await request(bridge, "/doctor", {
+      headers: { "x-codex-bridge-token": bridge.token }
+    });
+    assert.equal(doctor.payload.doctor.extensionSession.paired, true);
+    assert.equal(doctor.payload.extensionPaired, true);
   });
 });

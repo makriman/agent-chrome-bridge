@@ -1,5 +1,13 @@
 import { assignFrameOffsets, placeItems, translateRect } from "./frame-geometry.mjs";
 import { isTrustedExtensionSender } from "./extension-sender.mjs";
+import {
+  CREDENTIAL_STORAGE_KEY,
+  credentialFromRedeem,
+  listenerAcceptedExtension,
+  persistedStateWithoutCredential,
+  proofMatches,
+  validProofNonce
+} from "./extension-credential.mjs";
 
 const SOURCE = "codex-chrome-bridge";
 const BRIDGE_URL = "http://127.0.0.1:18474";
@@ -14,6 +22,10 @@ const COMMAND_HEARTBEAT_MS = 2000;
 let state = {
   extensionInstanceId: `ext_${crypto.randomUUID()}`,
   extensionToken: "",
+  operatorFingerprint: "",
+  credentialProblem: null,
+  protocolMismatch: null,
+  listenerUntrusted: false,
   armed: null,
   debuggerTabId: null,
   activeBridgeInstanceId: null,
@@ -39,6 +51,7 @@ let state = {
 let pollInFlight = false;
 let helloInFlight = false;
 let lastCommandId = "";
+let proofFreshUntil = 0;
 
 function storage() {
   return chrome.storage.session || chrome.storage.local;
@@ -69,7 +82,51 @@ function storageGet(key) {
 }
 
 function storageSet(value) {
-  return new Promise((resolve) => storage().set(value, () => resolve()));
+  const payload = value && value.state
+    ? { ...value, state: persistedStateWithoutCredential(value.state) }
+    : value;
+  return new Promise((resolve) => storage().set(payload, () => resolve()));
+}
+
+function sessionArea() {
+  return chrome.storage && chrome.storage.session ? chrome.storage.session : null;
+}
+
+function sessionGetCredential() {
+  const area = sessionArea();
+  if (!area) return Promise.resolve(null);
+  return new Promise((resolve) => {
+    area.get(CREDENTIAL_STORAGE_KEY, (saved) => {
+      const credential = saved && saved[CREDENTIAL_STORAGE_KEY];
+      if (!credential || typeof credential.extensionToken !== "string" || credential.extensionToken.length < 32) {
+        resolve(null);
+        return;
+      }
+      resolve(credential);
+    });
+  });
+}
+
+function sessionWriteCredential(credential) {
+  const area = sessionArea();
+  if (!area) {
+    return Promise.reject(new Error(
+      "This browser has no chrome.storage.session, so the extension token was not stored. Update Chrome and pair again. The token is never written to chrome.storage.local."
+    ));
+  }
+  return new Promise((resolve, reject) => {
+    area.set({ [CREDENTIAL_STORAGE_KEY]: credential }, () => {
+      const error = chrome.runtime.lastError;
+      if (error) reject(new Error(error.message));
+      else resolve();
+    });
+  });
+}
+
+function sessionClearCredential() {
+  const area = sessionArea();
+  if (!area || !area.remove) return Promise.resolve();
+  return new Promise((resolve) => area.remove(CREDENTIAL_STORAGE_KEY, () => resolve()));
 }
 
 function sanitizeUrl(value) {
@@ -112,6 +169,10 @@ function publicState() {
     lastPollAt: state.lastPollAt,
     lastCommandAt: state.lastCommandAt,
     paired: Boolean(state.extensionToken),
+    operatorFingerprint: state.operatorFingerprint || null,
+    credentialProblem: state.credentialProblem || null,
+    protocolMismatch: state.protocolMismatch || null,
+    listenerUntrusted: Boolean(state.listenerUntrusted),
     armed: sanitizedArmed(),
     runningCommand: state.runningCommand,
     latestCommand: state.latestCommand,
@@ -123,15 +184,28 @@ function publicState() {
 
 async function restoreState() {
   const saved = await storageGet("state");
+  let leakedToken = false;
   if (saved && saved.state) {
+    leakedToken = Boolean(saved.state.extensionToken || saved.state.operatorFingerprint);
+    const rest = persistedStateWithoutCredential(saved.state);
     state = {
       ...state,
-      ...saved.state,
-      extensionInstanceId: saved.state.extensionInstanceId || state.extensionInstanceId,
+      ...rest,
+      extensionToken: "",
+      operatorFingerprint: "",
+      extensionInstanceId: rest.extensionInstanceId || state.extensionInstanceId,
       debuggerTabId: null,
       runningCommand: null
     };
   }
+  const credential = await sessionGetCredential();
+  if (credential) {
+    state.extensionInstanceId = credential.extensionInstanceId || state.extensionInstanceId;
+    state.extensionToken = credential.extensionToken;
+    state.operatorFingerprint = credential.operatorFingerprint || "";
+    if (credential.bridgeInstanceId) state.activeBridgeInstanceId = credential.bridgeInstanceId;
+  }
+  if (leakedToken) await storageSet({ state });
   if (state.armed && state.armed.expiresAt <= Date.now()) {
     state.armed = null;
     await storageSet({ state });
@@ -165,9 +239,44 @@ function extensionHeaders(extra = {}) {
   return headers;
 }
 
+async function forgetExtensionCredential(reason) {
+  proofFreshUntil = 0;
+  state.extensionToken = "";
+  state.operatorFingerprint = "";
+  state.listenerUntrusted = true;
+  state.credentialProblem = reason;
+  await sessionClearCredential();
+  await storageSet({ state });
+}
+
+async function proveListener() {
+  const nonce = `${crypto.randomUUID()}${crypto.randomUUID()}`.replace(/-/g, "");
+  if (!validProofNonce(nonce)) return false;
+  const response = await fetch(`${BRIDGE_URL}/session-proof?nonce=${encodeURIComponent(nonce)}`, { cache: "no-store" });
+  if (!response.ok) return false;
+  const payload = await response.json().catch(() => null);
+  if (!payload || Number(payload.protocolVersion) !== PROTOCOL_VERSION) return false;
+  if (state.operatorFingerprint && payload.tokenFingerprint !== state.operatorFingerprint) return false;
+  return proofMatches(state.extensionToken, nonce, payload.proof);
+}
+
+async function ensureListenerProof() {
+  if (!state.extensionToken) return false;
+  if (Date.now() < proofFreshUntil) return true;
+  const proved = await proveListener();
+  proofFreshUntil = proved ? Date.now() + HELLO_INTERVAL_MS : 0;
+  state.listenerUntrusted = !proved;
+  if (!proved) {
+    state.credentialProblem = "Listener could not prove it holds this extension session. The extension token was not sent. Restart `npm run bridge` from this checkout. If doctor reports extension_unpaired, run `node bridge/control.mjs pair` again.";
+    await storageSet({ state });
+  }
+  return proved;
+}
+
 async function postEvent(type, payload = {}) {
-  if (!state.extensionToken) return;
+  if (!state.extensionToken || state.protocolMismatch) return;
   try {
+    if (!(await ensureListenerProof())) return;
     const response = await fetch(`${BRIDGE_URL}/event`, {
       method: "POST",
       headers: extensionHeaders({ "content-type": "application/json" }),
@@ -182,6 +291,16 @@ async function postEvent(type, payload = {}) {
         at: new Date().toISOString()
       })
     });
+    if (response.status === 403) {
+      await forgetExtensionCredential("Bridge rejected the extension session. Run `node bridge/control.mjs pair` and paste a new code.");
+      return;
+    }
+    if (!listenerAcceptedExtension(response.headers, PROTOCOL_VERSION)) {
+      state.protocolMismatch = "Listener did not prove a paired protocol v3 session. Restart `npm run bridge`, reload the extension, and pair again.";
+      proofFreshUntil = 0;
+      await storageSet({ state });
+      return;
+    }
     const bridge = await response.json().catch(() => null);
     if (bridge && bridge.bridgeInstanceId && bridge.bridgeInstanceId !== state.activeBridgeInstanceId) {
       state.activeBridgeInstanceId = bridge.bridgeInstanceId;
@@ -201,6 +320,23 @@ async function helloBridge({ force = false } = {}) {
     const response = await fetch(`${BRIDGE_URL}/hello`, { cache: "no-store" });
     if (!response.ok) return;
     const payload = await response.json();
+    if (Number(payload.protocolVersion) !== PROTOCOL_VERSION) {
+      state.protocolMismatch = `Bridge protocol v${payload.protocolVersion} does not match extension v${PROTOCOL_VERSION}. Restart npm run bridge, reload the extension, and pair again.`;
+      state.lastBridgeHelloAt = new Date().toISOString();
+      proofFreshUntil = 0;
+      await storageSet({ state });
+      return;
+    }
+    state.protocolMismatch = null;
+    if (state.operatorFingerprint && payload.tokenFingerprint && payload.tokenFingerprint !== state.operatorFingerprint) {
+      state.listenerUntrusted = true;
+      state.credentialProblem = "The listener fingerprint does not match the bridge this extension paired with. The extension token was not sent. Run doctor, then pair again if this checkout changed.";
+      proofFreshUntil = 0;
+      state.lastBridgeHelloAt = new Date().toISOString();
+      await storageSet({ state });
+      return;
+    }
+    state.listenerUntrusted = false;
     const changed = payload.bridgeInstanceId && payload.bridgeInstanceId !== state.activeBridgeInstanceId;
     state.activeBridgeInstanceId = payload.bridgeInstanceId || state.activeBridgeInstanceId;
     state.lastBridgeHelloAt = new Date().toISOString();
@@ -776,11 +912,15 @@ async function redeemPairTicket(ticket) {
     body: JSON.stringify({ ticket: code, extensionInstanceId: state.extensionInstanceId })
   });
   const payload = await response.json().catch(() => null);
-  if (!response.ok || !payload || !payload.ok || !payload.extensionToken) {
-    throw new Error(payload && payload.error ? payload.error : "Pairing failed.");
-  }
-  state.extensionToken = payload.extensionToken;
-  if (payload.bridgeInstanceId) state.activeBridgeInstanceId = payload.bridgeInstanceId;
+  const credential = credentialFromRedeem(payload, state.extensionInstanceId);
+  await sessionWriteCredential(credential);
+  state.extensionToken = credential.extensionToken;
+  state.operatorFingerprint = credential.operatorFingerprint;
+  state.credentialProblem = null;
+  state.protocolMismatch = null;
+  state.listenerUntrusted = false;
+  proofFreshUntil = 0;
+  if (credential.bridgeInstanceId) state.activeBridgeInstanceId = credential.bridgeInstanceId;
   await storageSet({ state });
   await helloBridge({ force: true });
   return publicState();
@@ -794,9 +934,8 @@ async function pairFromActiveTab() {
   } catch (_) {
     throw new Error("Active tab has no URL to pair from.");
   }
-  const allowedOrigin = parsed.origin === BRIDGE_URL || parsed.origin === "http://localhost:18474";
-  if (!allowedOrigin || parsed.pathname !== "/pair") {
-    throw new Error("Open the pairing page from `node bridge/control.mjs pair` in the active tab, then try again.");
+  if (parsed.origin !== BRIDGE_URL || parsed.pathname !== "/pair") {
+    throw new Error("Open the pairing page from `node bridge/control.mjs pair` at http://127.0.0.1:18474/pair in the active tab, then try again.");
   }
   return redeemPairTicket(decodeURIComponent(parsed.hash.replace(/^#/, "")));
 }
@@ -807,7 +946,8 @@ async function pollBridge() {
   try {
     await whenRestored();
     await helloBridge();
-    if (!state.extensionToken) return;
+    if (!state.extensionToken || state.protocolMismatch || state.listenerUntrusted) return;
+    if (!(await ensureListenerProof())) return;
     const params = new URLSearchParams({
       extensionInstanceId: state.extensionInstanceId,
       bridgeInstanceId: state.activeBridgeInstanceId || ""
@@ -819,7 +959,18 @@ async function pollBridge() {
     });
     state.lastPollAt = new Date().toISOString();
     await storageSet({ state });
+    if (response.status === 403) {
+      await forgetExtensionCredential("Bridge rejected the extension session. Run `node bridge/control.mjs pair` and paste a new code.");
+      return;
+    }
     if (!response.ok) return;
+    if (!listenerAcceptedExtension(response.headers, PROTOCOL_VERSION)) {
+      state.protocolMismatch = "Refusing commands from a listener that did not prove protocol v3 with a paired extension session.";
+      proofFreshUntil = 0;
+      await storageSet({ state });
+      return;
+    }
+    state.credentialProblem = null;
     const command = await response.json();
     if (command && command.id && command.id !== lastCommandId) {
       lastCommandId = command.id;

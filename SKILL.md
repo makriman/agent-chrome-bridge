@@ -35,7 +35,7 @@ npm run bridge
 node bridge/control.mjs pair
 ```
 
-The user pastes the code into the popup, or opens the printed localhost `/pair#…` page and clicks **Pair from tab**. Do not read `.bridge-token` or `.bridge-extension-session` aloud or into chat.
+The user pastes the code into the popup, or opens the printed `http://127.0.0.1:18474/pair#…` page and clicks **Pair from tab**. Do not read `.bridge-token` or `.bridge-extension-session` aloud or into chat. The extension token lives in `chrome.storage.session`. Reloading the unpacked extension clears it, so pair again after every reload. A bridge restart does not, unless `doctor` reports `extension_unpaired`.
 
 5. Ask the user to open/authenticate the target site in Chrome and click **Arm tab**.
 6. Check bridge state:
@@ -67,7 +67,7 @@ On Grok Bot, prefer this order. Details live in [GROK_BOT.md](GROK_BOT.md).
 7. Ask the user to **Arm tab** if needed.
 8. `inspect` / `click-ref` / `screenshot` (screenshot-first for Polaris static metrics).
 
-Optional port alias: `AGENT_CHROME_BRIDGE_PORT` (same as `CODEX_CHROME_BRIDGE_PORT`).
+Leave the listen URL at `http://127.0.0.1:18474`. `doctor` fails closed if `CODEX_CHROME_BRIDGE_URL` points somewhere else.
 
 ## Runtime Version Check
 
@@ -77,7 +77,9 @@ After pulling or updating the repo, always run:
 node bridge/control.mjs doctor
 ```
 
-If `doctor` returns `Not found`, a protocol mismatch, or a stale bridge warning, the bridge process is still running old code. Restart it, pair the extension again if `extensionPaired` is false, then ask the user to re-arm:
+`doctor` exits 0 only when this checkout's token matches the live listener, the URL is `http://127.0.0.1:18474`, the protocol is v3, and the extension session is paired. Before the first pair, exit 1 with `failures[].code` of `extension_unpaired` is expected — pair, then run `doctor` again. `token_mismatch`, `token_file`, `wrong_port`, `protocol_mismatch`, and `listener_unreachable` are not expected; fix them before arming. Do not paste tokens or the pairing code into chat.
+
+If `doctor` reports a stale bridge or protocol mismatch, the process on `18474` is still old code. Restart it, reload the extension, pair again, then ask the user to re-arm:
 
 ```bash
 lsof -ti tcp:18474 | xargs -r kill
@@ -124,6 +126,8 @@ node bridge/run-workflow.mjs artifacts/workflows/my-task.mjs --dry-run
 node bridge/run-workflow.mjs artifacts/workflows/my-task.mjs --resume
 node bridge/run-workflow.mjs artifacts/workflows/my-task.mjs --resume --approve
 ```
+
+Keep screenshot paths and `--run-dir` under `artifacts/`. `--approve` only continues a paused workflow. It is not popup **Approve final action**, and it does not authorize submit, purchase, delete, send, post, pay, or Enter. Mac smoke stays on the human checklist [docs/MAC-SMOKE-CHECKLIST.md](docs/MAC-SMOKE-CHECKLIST.md). `npm run check` does not run it.
 
 Minimal workflow shape:
 

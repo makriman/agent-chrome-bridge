@@ -38,10 +38,11 @@ The GitHub repo is **Agent-Chrome-Bridge**. Older `codex-chrome-bridge` clone UR
 | GitHub repo | `makriman/Agent-Chrome-Bridge` | Canonical slug (casing exact) |
 | npm `name` | `codex-chrome-bridge` | Package alias only; display name is Agent Chrome Bridge |
 | Extension message `source` | `codex-chrome-bridge` | Wire compat; do not rename |
-| Auth header | `x-codex-bridge-token` | Wire header; do not rename |
-| Listen port env | `CODEX_CHROME_BRIDGE_PORT` | Optional alias: `AGENT_CHROME_BRIDGE_PORT` |
-| Bridge URL env | `CODEX_CHROME_BRIDGE_URL` | Default `http://127.0.0.1:18474` |
-| Approval env | `CODEX_CHROME_BRIDGE_APPROVE` | Workflow runner only |
+| Auth header | `x-codex-bridge-token` | Operator CLI only; do not rename |
+| Extension header | `x-codex-bridge-extension-token` | Paired extension on `/poll` and `/event` |
+| Protocol | v3 | Restart the bridge and reload the extension after an upgrade |
+| Listen address | `http://127.0.0.1:18474` | `doctor` fails closed on another host or port |
+| Approval env | `CODEX_CHROME_BRIDGE_APPROVE` | Does not grant final actions. Use the popup approval from the arm draft |
 
 Existing `~/codex-chrome-bridge` checkouts and `CODEX_CHROME_BRIDGE_*` scripts remain valid.
 
@@ -60,21 +61,17 @@ npm run bridge
 node bridge/control.mjs doctor
 ```
 
-Load `extension/` in `chrome://extensions` (Developer mode → Load unpacked). Pair the extension to this bridge, then open the target site and click **Arm tab**.
+Load `extension/` in `chrome://extensions` (Developer mode → Load unpacked). `doctor` exits 0 only when this checkout's token matches the live listener, the protocol is v3, the port is `127.0.0.1:18474`, and an extension session is paired. Before the first pair, `extension_unpaired` is expected.
 
 ```bash
 node bridge/control.mjs pair
 ```
 
-Paste the one-time code into the popup, or open the printed `http://127.0.0.1:18474/pair#…` page and click **Pair from tab**. `/poll` and `/event` reject callers that do not present that paired extension session. The operator token in `.bridge-token` still authorizes the CLI only. Reload the extension after pulling this change, then pair again.
+Paste the one-time code into the popup, or open the printed `http://127.0.0.1:18474/pair#…` page and click **Pair from tab**. `/poll` and `/event` reject unpaired clients. The extension stores its token in `chrome.storage.session` and asks the listener to prove it knows that token before sending the header. Reloading the unpacked extension clears the session — pair again. A bridge restart keeps `.bridge-extension-session`; re-arm, and pair again only if `doctor` still reports `extension_unpaired`.
 
-Optional port alias:
+Do not point `CODEX_CHROME_BRIDGE_URL` at another host or port. `doctor` fails closed if you do. Screenshot and workflow outputs stay under `artifacts/` (absolute paths and `..` are rejected by the path draft). Final actions — submit, purchase, delete, send, post, pay, and Enter — need the popup **Approve final action** from the arm draft. Do not treat `CODEX_CHROME_BRIDGE_APPROVE` or `--approve` as that approval. Mac smoke is human-run via [docs/MAC-SMOKE-CHECKLIST.md](docs/MAC-SMOKE-CHECKLIST.md). CI does not run it.
 
-```bash
-AGENT_CHROME_BRIDGE_PORT=18474 npm run bridge
-```
-
-`CODEX_CHROME_BRIDGE_PORT` continues to work. If both are set, `AGENT_CHROME_BRIDGE_PORT` wins.
+The 2026-09-23 findings are in [docs/SECURITY-REVIEW-2026-09-23.md](docs/SECURITY-REVIEW-2026-09-23.md). Agent notes are in [AGENTS.md](AGENTS.md).
 
 ## Quality Checks
 

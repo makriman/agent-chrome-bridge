@@ -60,13 +60,7 @@ cd "/Users/you/Projects/Agent Chrome Bridge"
 npm run bridge
 ```
 
-Optional port alias (listen port only):
-
-```bash
-AGENT_CHROME_BRIDGE_PORT=18474 npm run bridge
-```
-
-`CODEX_CHROME_BRIDGE_PORT` still works. Leave the process running in that shell.
+Leave the process running in that shell. Do not move it off `127.0.0.1:18474`. `doctor` fails closed on another host or port.
 
 ### 4. Doctor
 
@@ -74,9 +68,11 @@ AGENT_CHROME_BRIDGE_PORT=18474 npm run bridge
 node bridge/control.mjs doctor
 ```
 
-If doctor cannot connect, the bridge is not up or is bound to another port. If doctor reports a stale protocol or missing process, kill `18474` and start `npm run bridge` again, then **pair** and **re-arm**.
+`doctor` exits 0 only when this checkout's token matches the process on `127.0.0.1:18474`, the protocol is v3, and the extension is paired. Exit 1 with `extension_unpaired` means pair next, then run `doctor` again. Exit 1 with `wrong_port`, `protocol_mismatch`, `token_mismatch`, or `listener_unreachable` means do not arm. Kill `18474`, start `npm run bridge` from this checkout, reload the extension, and pair again.
 
-If `doctor.extensionSession.paired` is false, run `node bridge/control.mjs pair` and have the user paste the code into the popup. Do not print `.bridge-token` or `.bridge-extension-session`. The pairing code is a one-time localhost secret; do not paste it into chat.
+The extension token is stored in `chrome.storage.session` and is not written to `chrome.storage.local`. Reloading the unpacked extension clears it. Pair again after a reload. Do not print `.bridge-token` or `.bridge-extension-session`. The pairing code is a one-time localhost secret; do not paste it into chat.
+
+Write screenshots and workflow output under `artifacts/`. The path draft rejects absolute paths and `..`. Stop before submit, purchase, delete, send, post, pay, or Enter unless the user explicitly approved that action. Popup **Approve final action** is the bridge-side token in the arm draft. Do not treat `CODEX_CHROME_BRIDGE_APPROVE` or `--approve` as that approval. Mac smoke is human-run from `docs/MAC-SMOKE-CHECKLIST.md`. CI does not run it.
 
 ### 5. Status
 
