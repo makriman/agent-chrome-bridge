@@ -1,9 +1,18 @@
 import http from "node:http";
-import { createHash, randomBytes, randomUUID } from "node:crypto";
-import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { randomBytes, randomUUID } from "node:crypto";
+import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  AUTH_FAIL_LIMIT,
+  AUTH_FAIL_WINDOW_MS,
+  createProbeLimiter,
+  MAX_JSON_BODY_BYTES,
+  PUBLIC_PROBE_LIMIT,
+  PUBLIC_PROBE_WINDOW_MS
+} from "./probe-limit.mjs";
 import { BRIDGE_VERSION, COMMAND_STATUSES, PROTOCOL_VERSION } from "./protocol.mjs";
+import { fingerprintToken, secretEquals } from "./token-file.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
@@ -15,6 +24,18 @@ const BRIDGE_INSTANCE_ID = `br_${randomUUID()}`;
 const DEFAULT_COMMAND_TIMEOUT_MS = 30000;
 const DEFAULT_LEASE_GRACE_MS = 5000;
 const MAX_EVENTS = 400;
+const publicProbeLimiter = createProbeLimiter({
+  limit: PUBLIC_PROBE_LIMIT,
+  windowMs: PUBLIC_PROBE_WINDOW_MS
+});
+const unknownProbeLimiter = createProbeLimiter({
+  limit: PUBLIC_PROBE_LIMIT,
+  windowMs: PUBLIC_PROBE_WINDOW_MS
+});
+const authFailLimiter = createProbeLimiter({
+  limit: AUTH_FAIL_LIMIT,
+  windowMs: AUTH_FAIL_WINDOW_MS
+});
 
 const state = {
   bridgeInstanceId: BRIDGE_INSTANCE_ID,
@@ -36,15 +57,24 @@ const state = {
   events: []
 };
 
+async function tightenMode(filePath) {
+  try {
+    await chmod(filePath, 0o600);
+  } catch (_) {
+    // Mode is best-effort when the filesystem ignores it.
+  }
+}
+
 async function writeTokenMeta(token, tokenStat, reason) {
   const meta = {
     createdAt: new Date().toISOString(),
     reason,
     tokenPath: TOKEN_PATH,
     tokenMtimeMs: tokenStat ? tokenStat.mtimeMs : Date.now(),
-    fingerprint: createHash("sha256").update(token).digest("hex").slice(0, 12)
+    fingerprint: fingerprintToken(token)
   };
   await writeFile(TOKEN_META_PATH, JSON.stringify(meta, null, 2), { mode: 0o600 });
+  await tightenMode(TOKEN_META_PATH);
   return meta;
 }
 
@@ -53,6 +83,7 @@ async function loadToken() {
   try {
     const existing = (await readFile(TOKEN_PATH, "utf8")).trim();
     if (existing.length >= 32) {
+      await tightenMode(TOKEN_PATH);
       const tokenStat = await stat(TOKEN_PATH);
       let meta;
       try {
@@ -60,14 +91,20 @@ async function loadToken() {
       } catch (_) {
         meta = await writeTokenMeta(existing, tokenStat, "metadata-created-for-existing-token");
       }
-      return { token: existing, meta: { ...meta, tokenMtimeMs: tokenStat.mtimeMs } };
+      await tightenMode(TOKEN_META_PATH);
+      return { token: existing, meta: { ...meta, tokenMtimeMs: tokenStat.mtimeMs, fingerprint: fingerprintToken(existing) } };
     }
-  } catch (_) {
-    // Missing, unreadable, or invalid token files are repaired below.
+  } catch (error) {
+    if (error.code && error.code !== "ENOENT") {
+      throw new Error(
+        `Refusing to replace ${TOKEN_PATH} after a read error (${error.code}). Fix permissions and restart. The bridge will not overwrite the token file.`
+      );
+    }
   }
 
   const token = randomBytes(32).toString("hex");
   await writeFile(TOKEN_PATH, `${token}\n`, { mode: 0o600 });
+  await tightenMode(TOKEN_PATH);
   const tokenStat = await stat(TOKEN_PATH);
   const meta = await writeTokenMeta(token, tokenStat, "generated");
   return { token, meta };
@@ -132,22 +169,56 @@ function html(res) {
 }
 
 async function body(req) {
+  const declared = Number(req.headers["content-length"] || 0);
+  if (Number.isFinite(declared) && declared > MAX_JSON_BODY_BYTES) {
+    const error = new Error("Request body too large.");
+    error.statusCode = 413;
+    throw error;
+  }
   const chunks = [];
-  for await (const chunk of req) chunks.push(chunk);
+  let size = 0;
+  for await (const chunk of req) {
+    size += chunk.length;
+    if (size > MAX_JSON_BODY_BYTES) {
+      const error = new Error("Request body too large.");
+      error.statusCode = 413;
+      throw error;
+    }
+    chunks.push(chunk);
+  }
   const text = Buffer.concat(chunks).toString("utf8");
   return text ? JSON.parse(text) : {};
 }
 
 function hasToken(req) {
-  return req.headers["x-codex-bridge-token"] === TOKEN;
+  const header = req.headers["x-codex-bridge-token"];
+  return secretEquals(typeof header === "string" ? header : "", TOKEN);
 }
 
 function requireToken(req, res) {
   if (hasToken(req)) return true;
+  if (!authFailLimiter.allow()) {
+    json(res, 429, {
+      ok: false,
+      error: "Too many rejected token attempts.",
+      hint: "Wait a minute, then run `node bridge/control.mjs doctor` from this checkout. Do not arm while doctor is failing."
+    });
+    return false;
+  }
   json(res, 403, {
     ok: false,
     error: "Missing or invalid bridge token.",
-    hint: "Run `node bridge/control.mjs doctor` from this repo. Restart the bridge if the token file changed."
+    hint: "Run `node bridge/control.mjs doctor` from this repo. Restart the bridge if the token file changed. Do not arm if the fingerprints differ."
+  });
+  return false;
+}
+
+function allowProbe(res, limiter) {
+  if (limiter.allow()) return true;
+  json(res, 429, {
+    ok: false,
+    error: "Too many unpaired probes.",
+    hint: "The extension hello and the status page stay inside this limit. Wait and retry doctor."
   });
   return false;
 }
@@ -405,7 +476,18 @@ function statusPayload({ publicOnly = false } = {}) {
     activeCommand: commandSummary(activeCommand),
     counts: commandCounts()
   };
-  if (publicOnly) return base;
+  if (publicOnly) {
+    return {
+      ok: true,
+      bridgeInstanceId: BRIDGE_INSTANCE_ID,
+      bridgeVersion: BRIDGE_VERSION,
+      protocolVersion: PROTOCOL_VERSION,
+      startedAt: state.startedAt,
+      connected: state.extension.connected,
+      tokenFingerprint: state.tokenMeta.fingerprint,
+      pendingCount: pending.length
+    };
+  }
   return {
     ...base,
     tokenMeta: state.tokenMeta,
@@ -449,13 +531,16 @@ async function doctorPayload() {
   try {
     const tokenStat = await stat(TOKEN_PATH);
     const tokenText = (await readFile(TOKEN_PATH, "utf8")).trim();
+    const mode = tokenStat.mode & 0o777;
     tokenFile = {
       exists: true,
       length: tokenText.length,
       validLength: tokenText.length >= 32,
       mtimeMs: tokenStat.mtimeMs,
-      fingerprint: tokenText ? createHash("sha256").update(tokenText).digest("hex").slice(0, 12) : null,
-      matchesRunningBridge: tokenText === TOKEN
+      mode,
+      modeOctal: mode.toString(8).padStart(3, "0"),
+      fingerprint: fingerprintToken(tokenText),
+      matchesRunningBridge: secretEquals(tokenText, TOKEN)
     };
   } catch (error) {
     tokenFile = { exists: false, error: error.message };
@@ -467,8 +552,12 @@ async function doctorPayload() {
       tokenMetaPath: TOKEN_META_PATH,
       tokenFile,
       bridgeTokenFingerprint: state.tokenMeta.fingerprint,
+      extensionCredential: {
+        present: false,
+        note: "The extension has no credential of its own. It accepts commands from whoever answers http://127.0.0.1:18474. Compare tokenFingerprint with the popup before arming."
+      },
       capabilities: state.latestExtensionState ? state.latestExtensionState.capabilities || null : null,
-      commandRoundTripHint: "Run `node bridge/control.mjs raw '{\"type\":\"status\"}'` to verify the extension command path."
+      commandRoundTripHint: "Run `node bridge/control.mjs raw '{\"type\":\"status\"}'` to verify the extension command path. Do not arm when doctor reports a token mismatch."
     }
   };
 }
@@ -488,17 +577,20 @@ const server = http.createServer(async (req, res) => {
     }
 
     if (req.method === "GET" && url.pathname === "/hello") {
+      if (!allowProbe(res, publicProbeLimiter)) return;
       json(res, 200, {
         ok: true,
         bridgeInstanceId: BRIDGE_INSTANCE_ID,
         bridgeVersion: BRIDGE_VERSION,
         protocolVersion: PROTOCOL_VERSION,
-        startedAt: state.startedAt
+        startedAt: state.startedAt,
+        tokenFingerprint: state.tokenMeta.fingerprint
       });
       return;
     }
 
     if (req.method === "GET" && url.pathname === "/public-status") {
+      if (!allowProbe(res, publicProbeLimiter)) return;
       json(res, 200, statusPayload({ publicOnly: true }));
       return;
     }
@@ -576,9 +668,10 @@ const server = http.createServer(async (req, res) => {
       return;
     }
 
+    if (!allowProbe(res, unknownProbeLimiter)) return;
     json(res, 404, { ok: false, error: "Not found" });
   } catch (error) {
-    json(res, 500, { ok: false, error: error.message });
+    json(res, error.statusCode || 500, { ok: false, error: error.message });
   }
 });
 

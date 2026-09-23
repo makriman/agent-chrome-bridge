@@ -9,7 +9,7 @@
         font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
       }
       body {
-        width: 340px;
+        width: 360px;
         margin: 0;
         padding: 14px;
         background: #f8f7f3;
@@ -46,6 +46,33 @@
         border-color: #b3261e;
         background: #b3261e;
       }
+      button:disabled {
+        opacity: 0.45;
+        cursor: not-allowed;
+      }
+      .warning {
+        margin: 0 0 10px;
+        padding: 8px;
+        background: #fff8e8;
+        border: 1px solid #e6d3a1;
+        border-radius: 6px;
+        color: #5c4510;
+        font-size: 12px;
+        line-height: 1.4;
+      }
+      .fingerprint {
+        margin: 0 0 8px;
+        font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+        word-break: break-all;
+      }
+      label.confirm {
+        display: flex;
+        gap: 8px;
+        align-items: flex-start;
+        font-size: 12px;
+        line-height: 1.35;
+        margin: 0 0 8px;
+      }
       pre {
         max-height: 280px;
         overflow: auto;
@@ -61,8 +88,14 @@
   <body>
     <h1>Agent Chrome Bridge</h1>
     <p>Give Grok Bot and other agents your Chrome. Arm only the active tab for 30 minutes. The local bridge can control that tab until you stop it.</p>
+    <p class="warning">This extension has no credential of its own. It trusts whoever answers <code>http://127.0.0.1:18474</code>. Compare the listener fingerprint with <code>node bridge/control.mjs doctor</code> before arming. If they differ, click Stop and do not queue commands.</p>
+    <p id="fingerprint" class="fingerprint">Listener fingerprint: waiting for the bridge.</p>
+    <label class="confirm" for="confirm-fingerprint">
+      <input id="confirm-fingerprint" type="checkbox">
+      <span>I compared this fingerprint with doctor. It matches.</span>
+    </label>
     <div class="row">
-      <button id="arm">Arm tab</button>
+      <button id="arm" disabled>Arm tab</button>
       <button id="status" class="secondary">Status</button>
       <button id="disarm" class="danger">Stop</button>
     </div>

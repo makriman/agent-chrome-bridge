@@ -14,6 +14,7 @@ let state = {
   debuggerTabId: null,
   activeBridgeInstanceId: null,
   lastBridgeHelloAt: null,
+  listenerFingerprint: null,
   lastPollAt: null,
   lastCommandAt: null,
   runningCommand: null,
@@ -106,6 +107,11 @@ function publicState() {
     activeBridgeInstanceId: state.activeBridgeInstanceId,
     lastBridgeHelloAt: state.lastBridgeHelloAt,
     lastPollAt: state.lastPollAt,
+    listenerFingerprint: state.listenerFingerprint || null,
+    extensionCredential: {
+      present: false,
+      note: "This extension has no credential of its own. It accepts commands from whoever answers http://127.0.0.1:18474. Compare listenerFingerprint with doctor before arming."
+    },
     lastCommandAt: state.lastCommandAt,
     armed: sanitizedArmed(),
     runningCommand: state.runningCommand,
@@ -191,6 +197,9 @@ async function helloBridge({ force = false } = {}) {
     const payload = await response.json();
     const changed = payload.bridgeInstanceId && payload.bridgeInstanceId !== state.activeBridgeInstanceId;
     state.activeBridgeInstanceId = payload.bridgeInstanceId || state.activeBridgeInstanceId;
+    if (Object.prototype.hasOwnProperty.call(payload, "tokenFingerprint")) {
+      state.listenerFingerprint = payload.tokenFingerprint || null;
+    }
     state.lastBridgeHelloAt = new Date().toISOString();
     await storageSet({ state });
     await postEvent("hello", {
@@ -763,6 +772,11 @@ async function pollBridge() {
   }
 }
 
+async function refreshPublicState() {
+  await helloBridge({ force: true });
+  return publicState();
+}
+
 chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
   if (!message || message.source !== SOURCE) return false;
   if (message.type === "popup-command") {
@@ -770,6 +784,7 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     const run =
       action === "arm" ? armActiveTab() :
       action === "disarm" ? disarm() :
+      action === "status" ? refreshPublicState() :
       Promise.resolve(publicState());
     run.then((result) => sendResponse({ ok: true, result }))
       .catch((error) => sendResponse({ ok: false, error: error.message }));

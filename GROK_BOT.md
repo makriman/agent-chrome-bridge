@@ -73,7 +73,7 @@ AGENT_CHROME_BRIDGE_PORT=18474 npm run bridge
 node bridge/control.mjs doctor
 ```
 
-If doctor cannot connect, the bridge is not up or is bound to another port. If doctor reports a stale protocol or missing process, kill `18474` and start `npm run bridge` again, then **re-arm**.
+If doctor cannot connect, the bridge is not up or is bound to another port. If doctor reports `token_mismatch`, do not arm: the extension has no credential of its own and will trust that listener. If doctor reports a stale protocol or missing process, kill `18474` and start `npm run bridge` again, then **re-arm**.
 
 ### 5. Status
 

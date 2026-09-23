@@ -1,8 +1,9 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BRIDGE_VERSION, PROTOCOL_VERSION, TERMINAL_STATUSES as TERMINAL_STATUS_LIST } from "./protocol.mjs";
+import { readOperatorToken } from "./token-file.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
@@ -143,11 +144,7 @@ export class BrowserClient {
   }
 
   async token() {
-    const value = (await readFile(this.tokenPath, "utf8")).trim();
-    if (value.length < 32) {
-      throw new Error("Bridge token is missing or invalid. Start/restart the bridge with `npm run bridge`.");
-    }
-    return value;
+    return readOperatorToken(this.tokenPath);
   }
 
   async request(path, options = {}) {

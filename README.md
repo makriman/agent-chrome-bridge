@@ -60,7 +60,9 @@ npm run bridge
 node bridge/control.mjs doctor
 ```
 
-Load `extension/` in `chrome://extensions` (Developer mode → Load unpacked). Open the target site in Chrome, then click **Arm tab** in the popup.
+`doctor` must print `code: "match"` and the same token fingerprint as the bridge log. If it prints `token_mismatch`, do not arm. The extension has no credential of its own and will trust whoever answers `127.0.0.1:18474`.
+
+Load `extension/` in `chrome://extensions` (Developer mode → Load unpacked). Open the target site in Chrome, compare the popup fingerprint with doctor, then click **Arm tab**.
 
 Optional port alias:
 

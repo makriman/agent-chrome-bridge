@@ -55,7 +55,7 @@ On Grok Bot, prefer this order. Details live in [GROK_BOT.md](GROK_BOT.md).
 3. `npm run bridge` if doctor/status cannot reach `127.0.0.1:18474`.
 4. `node bridge/control.mjs doctor`
 5. `node bridge/control.mjs status`
-6. Ask the user to **Arm tab** if needed.
+6. Ask the user to compare the popup fingerprint with doctor, then **Arm tab** if needed. If doctor prints `token_mismatch`, do not arm.
 7. `inspect` / `click-ref` / `screenshot` (screenshot-first for Polaris static metrics).
 
 Optional port alias: `AGENT_CHROME_BRIDGE_PORT` (same as `CODEX_CHROME_BRIDGE_PORT`).
@@ -68,7 +68,7 @@ After pulling or updating the repo, always run:
 node bridge/control.mjs doctor
 ```
 
-If `doctor` returns `Not found`, a protocol mismatch, or a stale bridge warning, the bridge process is still running old code. Restart it, then ask the user to re-arm:
+If `doctor` returns `token_mismatch` or `token_unverified`, do not arm and do not restart over a listener you do not trust. If it returns `Not found`, a protocol mismatch, or a stale bridge warning, the bridge process is still running old code. Restart it, then ask the user to re-arm:
 
 ```bash
 lsof -ti tcp:18474 | xargs -r kill
