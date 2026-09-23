@@ -1,5 +1,8 @@
+import { assertCdpMethodAllowed } from "./cdp-allowlist.mjs";
 import { assignFrameOffsets, placeItems, translateRect } from "./frame-geometry.mjs";
 import { isTrustedExtensionSender } from "./extension-sender.mjs";
+import { armedOriginPattern } from "./host-access.mjs";
+import { boundScreenshotResult, releaseScreenshotResult } from "./resource-bounds.mjs";
 import {
   CREDENTIAL_STORAGE_KEY,
   credentialFromRedeem,
@@ -18,6 +21,7 @@ const DEFAULT_COMMAND_TIMEOUT_MS = 30000;
 const POLL_INTERVAL_MS = 500;
 const HELLO_INTERVAL_MS = 2000;
 const COMMAND_HEARTBEAT_MS = 2000;
+const ARM_EXPIRY_ALARM = "arm-expiry";
 
 let state = {
   extensionInstanceId: `ext_${crypto.randomUUID()}`,
@@ -207,21 +211,22 @@ async function restoreState() {
   }
   if (leakedToken) await storageSet({ state });
   if (state.armed && state.armed.expiresAt <= Date.now()) {
-    state.armed = null;
-    await storageSet({ state });
-  }
-  if (state.armed) {
+    await clearArm({ reason: "arm_expired" });
+  } else if (state.armed) {
+    let tab = null;
     try {
-      const tab = await chromeCall("tabs", "get", state.armed.tabId);
-      if (!tab || !/^https?:/.test(tab.url || "")) {
-        state.armed = null;
-      } else {
-        await updateArmedTabSnapshot(tab);
-      }
+      tab = await chromeCall("tabs", "get", state.armed.tabId);
     } catch (_) {
-      state.armed = null;
+      tab = null;
     }
-    await storageSet({ state });
+    if (!tab || !armedOriginPattern(tab.url || "")) {
+      await clearArm({ reason: "arm_tab_gone" });
+    } else {
+      await updateArmedTabSnapshot(tab);
+      await scheduleArmAlarm(state.armed.expiresAt);
+    }
+  } else if (state.debuggerTabId !== null) {
+    await detachDebugger();
   }
 }
 
@@ -376,13 +381,58 @@ async function activeTab() {
   return tabs[0];
 }
 
+async function ensureHostAccess(tab) {
+  const pattern = armedOriginPattern(tab.url);
+  if (!pattern) throw new Error("Only http/https tabs can be armed.");
+  const granted = await chromeCall("permissions", "contains", { origins: [pattern] });
+  if (!granted) {
+    throw new Error("Host access for this origin was not granted. Click Arm tab in the popup and accept the site permission.");
+  }
+  return pattern;
+}
+
+async function releaseHostAccess(url) {
+  const pattern = armedOriginPattern(url);
+  if (!pattern) return;
+  await chromeCall("permissions", "remove", { origins: [pattern] }).catch(() => {});
+}
+
+function scheduleArmAlarm(expiresAt) {
+  return chromeCall("alarms", "create", ARM_EXPIRY_ALARM, { when: expiresAt });
+}
+
+function clearArmAlarm() {
+  return chromeCall("alarms", "clear", ARM_EXPIRY_ALARM).catch(() => {});
+}
+
+async function clearArm({ reason } = {}) {
+  const tabId = state.armed ? state.armed.tabId : state.debuggerTabId;
+  const url = state.armed ? state.armed.url : "";
+  await clearArmAlarm();
+  await detachDebugger();
+  if (tabId != null) await debuggerCall("detach", { tabId }).catch(() => {});
+  state.armed = null;
+  state.runningCommand = null;
+  await releaseHostAccess(url);
+  await storageSet({ state });
+  await postEvent("disarmed", reason ? { reason } : {});
+}
+
+async function expireArmIfDue() {
+  if (state.armed && state.armed.expiresAt > Date.now()) return;
+  if (!state.armed && state.debuggerTabId === null) return;
+  await clearArm({ reason: state.armed ? "arm_expired" : undefined });
+}
+
 async function armActiveTab() {
   const tab = await activeTab();
-  if (!/^https?:/.test(tab.url || "")) {
-    throw new Error("Only http/https tabs can be armed.");
-  }
+  const pattern = await ensureHostAccess(tab);
+  const previousUrl = state.armed ? state.armed.url : "";
   if (state.armed && state.armed.tabId !== tab.id) {
     await detachDebugger();
+  }
+  if (previousUrl && armedOriginPattern(previousUrl) !== pattern) {
+    await releaseHostAccess(previousUrl);
   }
   state.armed = {
     armSessionId: `arm_${crypto.randomUUID()}`,
@@ -393,6 +443,7 @@ async function armActiveTab() {
     armedAt: Date.now(),
     expiresAt: Date.now() + ARM_DURATION_MS
   };
+  await scheduleArmAlarm(state.armed.expiresAt).catch(() => {});
   await storageSet({ state });
   await helloBridge({ force: true });
   await postEvent("armed", { armed: sanitizedArmed() });
@@ -401,20 +452,13 @@ async function armActiveTab() {
 }
 
 async function disarm() {
-  await detachDebugger();
-  state.armed = null;
-  state.runningCommand = null;
-  await storageSet({ state });
-  await postEvent("disarmed", {});
+  await clearArm();
   return publicState();
 }
 
 async function getArmedTab() {
   if (!isArmed()) {
-    if (state.armed) {
-      state.armed = null;
-      await storageSet({ state });
-    }
+    if (state.armed || state.debuggerTabId !== null) await expireArmIfDue();
     throw new Error("Bridge is not armed. Click the extension icon and arm the active tab.");
   }
   const tab = await chromeCall("tabs", "get", state.armed.tabId);
@@ -446,6 +490,7 @@ async function detachDebugger() {
 }
 
 async function sendCdp(tabId, method, params = {}) {
+  assertCdpMethodAllowed(method);
   await ensureDebugger(tabId);
   return debuggerCall("sendCommand", { tabId }, method, params);
 }
@@ -776,7 +821,7 @@ async function screenshot(command = {}) {
         fallback: "tabs.captureVisibleTab",
         error: fallbackError.message,
         cdpError: cdpError.message,
-        hint: "CDP Page.captureScreenshot failed, then tabs.captureVisibleTab failed. Focus the Chrome window, keep <all_urls> host permission, and retry. inspect can still work."
+        hint: "CDP Page.captureScreenshot failed, then tabs.captureVisibleTab failed. Focus the Chrome window and arm the tab again so this origin's host access is granted. inspect can still work."
       };
       await storageSet({ state });
       const error = new Error(fallbackError.message);
@@ -858,17 +903,22 @@ function withTimeout(promise, timeoutMs) {
 }
 
 async function finishCommand(command, status, fields = {}) {
-  state.latestResult = {
+  const posted = {
     id: command.id,
     type: command.type,
     status,
     startedAt: state.runningCommand ? state.runningCommand.startedAt : undefined,
     finishedAt: new Date().toISOString(),
-    ...fields
+    ...fields,
+    result: fields.result ? boundScreenshotResult(fields.result) : fields.result
   };
+  state.latestResult = posted;
+  await postEvent("command-result", posted);
+  state.latestResult = posted.result
+    ? { ...posted, result: releaseScreenshotResult(posted.result) }
+    : posted;
   state.runningCommand = null;
   await storageSet({ state });
-  await postEvent("command-result", state.latestResult);
 }
 
 async function runBridgeCommand(command) {
@@ -941,10 +991,12 @@ async function pairFromActiveTab() {
 }
 
 async function pollBridge() {
-  if (pollInFlight || state.runningCommand) return;
+  if (pollInFlight) return;
   pollInFlight = true;
   try {
     await whenRestored();
+    await expireArmIfDue();
+    if (state.runningCommand) return;
     await helloBridge();
     if (!state.extensionToken || state.protocolMismatch || state.listenerUntrusted) return;
     if (!(await ensureListenerProof())) return;
@@ -1021,6 +1073,19 @@ chrome.tabs.onRemoved.addListener((tabId) => {
   if (state.armed && tabId === state.armed.tabId) {
     disarm().catch(() => {});
   }
+});
+
+chrome.alarms.onAlarm.addListener((alarm) => {
+  if (!alarm || alarm.name !== ARM_EXPIRY_ALARM) return;
+  whenRestored()
+    .then(async () => {
+      if (state.armed && state.armed.expiresAt > Date.now()) {
+        await scheduleArmAlarm(state.armed.expiresAt);
+        return;
+      }
+      await expireArmIfDue();
+    })
+    .catch(() => {});
 });
 
 const restored = restoreState();

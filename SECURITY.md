@@ -38,6 +38,10 @@ Findings and residual status: [docs/SECURITY-REVIEW-2026-09-23.md](docs/SECURITY
 
 The content script is injected into the armed tab when a command needs the DOM. It does not accept `window.postMessage` from the page. Frame inspect, find, and fill go through `chrome.tabs.sendMessage` from this extension.
 
+`chrome.debugger` commands go through an allowlist: `Input.dispatchMouseEvent`, `Input.dispatchKeyEvent`, `Input.insertText`, `Page.enable`, and `Page.captureScreenshot`. Cookie CDP methods are rejected. Host access is the loopback bridge plus the armed tab's http(s) origin, which the popup requests when the user clicks **Arm tab**. There is no `<all_urls>` permission. The debugger detaches when that 30-minute arm expires.
+
+Operator and extension tokens are compared with `timingSafeEqual`. Loading either token file runs `chmod 0600`. JSON bodies are capped at 12 MiB and a stalled request is closed after 30 seconds. A lease cannot move past the command's original deadline. Screenshot pixels kept for `/result` are capped at 8 MiB, and only the newest screenshot stays in memory. The extension drops its copy after the result is posted.
+
 ## Secrets and Data
 
 - Never commit env files, provider keys, tokens, database dumps, or production user data.

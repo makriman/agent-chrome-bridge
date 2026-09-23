@@ -1,11 +1,13 @@
 import http from "node:http";
-import { createHash, randomBytes, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { realpathSync } from "node:fs";
 import { chmod, mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { BRIDGE_VERSION, COMMAND_STATUSES, PROTOCOL_VERSION, TERMINAL_STATUSES } from "./protocol.mjs";
+import { chmodOwnerOnly, secretEquals } from "./token-file.mjs";
 import { pairedSessionHeaders, sessionProofHex, validProofNonce } from "../extension/extension-credential.mjs";
+import { boundScreenshotResult, MAX_JSON_BODY_BYTES, MAX_SCREENSHOT_CHARS, releaseScreenshotResult } from "../extension/resource-bounds.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
@@ -36,12 +38,10 @@ function nowMs() {
   return Date.now();
 }
 
-function secretEquals(presented, expected) {
-  if (typeof presented !== "string" || typeof expected !== "string") return false;
-  const left = Buffer.from(presented);
-  const right = Buffer.from(expected);
-  if (left.length === 0 || left.length !== right.length) return false;
-  return timingSafeEqual(left, right);
+function capLeaseExpiresAt(command, now) {
+  const uncapped = now + Number(command.timeoutMs || 0) + DEFAULT_LEASE_GRACE_MS;
+  if (!Number.isFinite(command.deadlineAt)) return uncapped;
+  return Math.min(uncapped, command.deadlineAt);
 }
 
 function headerValue(req, name) {
@@ -83,6 +83,7 @@ async function loadSecretFile(filePath, metaPath) {
     const existing = (await readFile(filePath, "utf8")).trim();
     if (existing.length >= 32) {
       const tokenStat = await stat(filePath);
+      await chmodOwnerOnly(filePath);
       let meta;
       try {
         meta = JSON.parse(await readFile(metaPath, "utf8"));
@@ -126,13 +127,19 @@ function html(res, body) {
   res.end(body);
 }
 
-async function readBody(req, limit) {
+async function readBody(req, limit = MAX_JSON_BODY_BYTES) {
+  const declared = Number(req.headers["content-length"] || 0);
+  if (limit && Number.isFinite(declared) && declared > limit) {
+    const error = new Error(`Request body exceeds ${limit} bytes.`);
+    error.statusCode = 413;
+    throw error;
+  }
   const chunks = [];
   let size = 0;
   for await (const chunk of req) {
     size += chunk.length;
     if (limit && size > limit) {
-      const error = new Error("Request body too large.");
+      const error = new Error(`Request body exceeds ${limit} bytes.`);
       error.statusCode = 413;
       throw error;
     }
@@ -179,6 +186,8 @@ export async function startBridge(options = {}) {
   const extensionTokenPath = join(root, ".bridge-extension-session");
   const extensionTokenMetaPath = join(root, ".bridge-extension-session.meta.json");
   const quiet = options.quiet !== false;
+  const maxBodyBytes = Number.isFinite(options.maxBodyBytes) ? options.maxBodyBytes : MAX_JSON_BODY_BYTES;
+  const maxScreenshotChars = Number.isFinite(options.maxScreenshotChars) ? options.maxScreenshotChars : MAX_SCREENSHOT_CHARS;
   const bridgeInstanceId = `br_${randomUUID()}`;
   const { token: operatorToken, meta: operatorMeta } = await loadSecretFile(tokenPath, tokenMetaPath);
   const { token: extensionToken, meta: extensionMeta } = await loadSecretFile(extensionTokenPath, extensionTokenMetaPath);
@@ -340,6 +349,16 @@ export async function startBridge(options = {}) {
     return item;
   }
 
+  function retainScreenshot(command, result) {
+    if (!result || typeof result.dataUrl !== "string" || !result.dataUrl.startsWith("data:")) return result;
+    for (const other of state.commands.values()) {
+      if (other === command || !other.result || typeof other.result.dataUrl !== "string") continue;
+      if (!other.result.dataUrl.startsWith("data:")) continue;
+      other.result = releaseScreenshotResult(other.result);
+    }
+    return result;
+  }
+
   function leaseNextCommand(query) {
     expireCommands();
     const extensionArmSessionId = query.searchParams.get("armSessionId") || null;
@@ -361,7 +380,7 @@ export async function startBridge(options = {}) {
       }
       const leasedAt = nowIso();
       command.startedAt = leasedAt;
-      command.leaseExpiresAt = nowMs() + command.timeoutMs + DEFAULT_LEASE_GRACE_MS;
+      command.leaseExpiresAt = capLeaseExpiresAt(command, nowMs());
       mark(command, "leased", { startedAt: leasedAt });
       return command;
     }
@@ -396,8 +415,7 @@ export async function startBridge(options = {}) {
         return { ok: true, status: command.status };
       }
       if (event.type === "command-heartbeat") {
-        const uncapped = nowMs() + command.timeoutMs + DEFAULT_LEASE_GRACE_MS;
-        command.leaseExpiresAt = command.deadlineAt ? Math.min(uncapped, command.deadlineAt) : uncapped;
+        command.leaseExpiresAt = capLeaseExpiresAt(command, nowMs());
         command.lifecycle.push({ status: "heartbeat", at: nowIso() });
         return { ok: true, leaseExpiresAt: command.leaseExpiresAt, deadlineAt: command.deadlineAt };
       }
@@ -405,9 +423,10 @@ export async function startBridge(options = {}) {
       if (!TERMINAL.has(status)) {
         return { ok: false, statusCode: 400, error: "Result status must be terminal." };
       }
+      const result = retainScreenshot(command, boundScreenshotResult(payload.result || null, maxScreenshotChars));
       mark(command, status, {
         finishedAt: payload.finishedAt || payload.at || nowIso(),
-        result: payload.result || null,
+        result,
         error: payload.error || null
       });
       return { ok: true, status };
@@ -566,7 +585,7 @@ export async function startBridge(options = {}) {
         validLength: tokenText.length >= 32,
         mtimeMs: tokenStat.mtimeMs,
         fingerprint: tokenText ? createHash("sha256").update(tokenText).digest("hex").slice(0, 12) : null,
-        matchesRunningBridge: tokenText === operatorToken
+        matchesRunningBridge: secretEquals(tokenText, operatorToken)
       };
     } catch (error) {
       tokenFile = { exists: false, error: error.message };
@@ -753,7 +772,7 @@ export async function startBridge(options = {}) {
 
       if (req.method === "POST" && url.pathname === "/command") {
         if (!requireOperatorToken(req, res)) return;
-        const command = await readBody(req);
+        const command = await readBody(req, maxBodyBytes);
         if (!command.type && !command.op) {
           json(res, 400, { ok: false, error: "Missing command type/op." });
           return;
@@ -767,7 +786,7 @@ export async function startBridge(options = {}) {
           rejectExtension(res);
           return;
         }
-        const event = await readBody(req);
+        const event = await readBody(req, maxBodyBytes);
         const extensionInstanceId = event && event.payload ? event.payload.extensionInstanceId : "";
         if (!extensionSessionMatches(extensionInstanceId)) {
           rejectExtension(res);
@@ -820,7 +839,7 @@ export async function startBridge(options = {}) {
 
       if (req.method === "POST" && url.pathname === "/cancel") {
         if (!requireOperatorToken(req, res)) return;
-        const payload = await readBody(req);
+        const payload = await readBody(req, maxBodyBytes);
         const command = cancelCommand(payload.id);
         json(res, command ? 200 : 404, { ok: Boolean(command), command: commandSummary(command) });
         return;
@@ -840,9 +859,14 @@ export async function startBridge(options = {}) {
 
       json(res, 404, { ok: false, error: "Not found" });
     } catch (error) {
-      json(res, error.statusCode || 500, { ok: false, error: error.message });
+      const statusCode = error.statusCode || 500;
+      json(res, statusCode, { ok: false, error: error.message });
+      if (statusCode === 413) res.on("finish", () => req.destroy());
     }
   });
+
+  server.requestTimeout = Number.isFinite(options.requestTimeout) ? options.requestTimeout : 30_000;
+  server.headersTimeout = Math.min(server.requestTimeout, 10_000);
 
   await new Promise((resolve, reject) => {
     server.once("error", reject);

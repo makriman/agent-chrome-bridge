@@ -64,7 +64,9 @@ Do not print the pairing code, either token, or the session file.
 ## Safety
 
 - Never commit or paste `.bridge-token`, `.bridge-token.meta.json`, `.bridge-extension-session`, or `.bridge-extension-session.meta.json`.
-- Never export cookies, `document.cookie`, CDP `Network.getCookies`, or profile session files.
+- Never export cookies, `document.cookie`, CDP `Network.getCookies`, or profile session files. `sendCdp` allowlists input and `Page.captureScreenshot` only.
+- Do not add `<all_urls>`. Arm requests host access for that tab's http(s) origin. The debugger alarm detaches when the arm expires.
+- Keep JSON bodies at or under 12 MiB. Do not extend a command lease past `deadlineAt`. Do not retain more than one screenshot data URL, and do not retain one over 8 MiB.
 - The bridge is loopback-only. Do not bind `0.0.0.0`, add a tunnel, or turn this into a remote control plane.
 - One armed tab. Do not add a second concurrent arm target.
 - Keep screenshot paths and workflow `--run-dir` values under `artifacts/`. The path draft rejects absolute paths and `..`.
@@ -74,6 +76,8 @@ Do not print the pairing code, either token, or the session file.
 
 ## Drafts this branch depends on
 
-This residual work is stacked on the poll/event pairing draft (`cursor/fix-poll-event-postmessage-e146`). Merge that draft first. It will conflict with the path, origin-arm, and loopback draft in `background.js`, `bridge/server.mjs`, `bridge/control.mjs`, `bridge/protocol.mjs`, the popup, and the docs. It will also conflict with the findings draft where both add `AGENTS.md`.
+This M4/L2/L3 draft is stacked on `cursor/residual-credential-doctor-docs-74c0` (open PR #7), which is stacked on `cursor/fix-poll-event-postmessage-e146` (open PR #5). Retarget it to `main` after PRs #4–#7 land. Do not merge it before that, and do not merge it in this pass.
+
+PR #6 (`cursor/medium-path-arm-loopback-c922`) is a sibling. On retarget, keep this branch's CDP allowlist, loopback-only required host permissions, arm-expiry debugger detach, token `chmod`, body cap, lease cap, and screenshot memory bound. Re-apply #6's path confinement and origin-scoped arm on top. PR #4 is the findings write-up.
 
 Do not merge until founder review.

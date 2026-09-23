@@ -151,7 +151,7 @@ node bridge/control.mjs wait 400
 ### Screenshots (CDP vs `captureVisibleTab`)
 
 1. Extension tries CDP `Page.captureScreenshot` (debugger banner is expected).
-2. Falls back to `tabs.captureVisibleTab` (needs the window focused and host permission).
+2. Falls back to `tabs.captureVisibleTab` (needs the window focused and the armed origin's host permission).
 3. If both fail, `inspect` can still work — treat it as a screenshot capability gap, not a dead bridge.
 
 Quote paths that contain spaces. On Grok Bot / Mac, CopyToBox the PNG after a successful capture.

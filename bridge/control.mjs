@@ -1,5 +1,6 @@
 import { createHash } from "node:crypto";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
+import { chmodOwnerOnly } from "./token-file.mjs";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { assessDoctor, bridgeUrlProblem } from "./doctor-report.mjs";
@@ -97,6 +98,7 @@ async function token() {
       "Bridge token is missing or invalid. Start/restart the bridge with `npm run bridge` so it can repair `.bridge-token`. This command does not write that file."
     );
   }
+  await chmodOwnerOnly(TOKEN_PATH);
   return value;
 }
 
