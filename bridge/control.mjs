@@ -1,8 +1,9 @@
-import { createHash } from "node:crypto";
 import { mkdir, readFile, stat, writeFile } from "node:fs/promises";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { classifyDoctorAuth, TOKEN_UNVERIFIED_HINT } from "./doctor-auth.mjs";
 import { BRIDGE_VERSION, PROTOCOL_VERSION, TERMINAL_STATUSES as TERMINAL_STATUS_LIST } from "./protocol.mjs";
+import { fingerprintToken, readOperatorToken } from "./token-file.mjs";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = dirname(HERE);
@@ -80,19 +81,7 @@ function numberArg(index, label) {
 }
 
 async function token() {
-  let value = "";
-  try {
-    value = (await readFile(TOKEN_PATH, "utf8")).trim();
-  } catch (_) {
-    await mkdir(ROOT, { recursive: true });
-    await writeFile(TOKEN_PATH, "", { mode: 0o600 });
-  }
-  if (value.length < 32) {
-    throw new Error(
-      "Bridge token is missing or invalid. Start/restart the bridge with `npm run bridge` so it can repair `.bridge-token`."
-    );
-  }
-  return value;
+  return readOperatorToken(TOKEN_PATH);
 }
 
 async function request(path, options = {}) {
@@ -155,7 +144,7 @@ async function localTokenInfo() {
       length: value.length,
       validLength: value.length >= 32,
       mtimeMs: tokenStat.mtimeMs,
-      fingerprint: value ? createHash("sha256").update(value).digest("hex").slice(0, 12) : null
+      fingerprint: fingerprintToken(value)
     };
   } catch (error) {
     return { exists: false, error: error.message };
@@ -282,32 +271,130 @@ async function runCommand() {
   if (result.status !== "succeeded") process.exit(1);
 }
 
+function listenerFingerprintOf(publicStatus) {
+  return publicStatus && typeof publicStatus.tokenFingerprint === "string" ? publicStatus.tokenFingerprint : null;
+}
+
+function failDoctor(payload) {
+  printJson(payload);
+  process.exit(1);
+}
+
 async function runDoctor() {
   const local = await localTokenInfo();
+  if (!local.validLength) {
+    failDoctor({
+      ok: false,
+      code: "token_unreadable",
+      error: "Bridge token is missing or invalid.",
+      expectedBridgeVersion: BRIDGE_VERSION,
+      expectedProtocolVersion: PROTOCOL_VERSION,
+      localTokenFile: local,
+      hint: "Start `npm run bridge` so this checkout can create `.bridge-token`. Doctor does not overwrite the token file. Do not arm."
+    });
+  }
+
   let publicStatus = null;
   try {
     publicStatus = await request("/public-status", { token: false });
   } catch (error) {
-    publicStatus = { ok: false, error: error.message };
+    publicStatus = { ok: false, error: error.message, status: error.status || null };
+    if (error.status) {
+      const limited = error.status === 429;
+      failDoctor({
+        ok: false,
+        code: limited ? "token_probe_limited" : "token_unverified",
+        error: error.message,
+        expectedBridgeVersion: BRIDGE_VERSION,
+        expectedProtocolVersion: PROTOCOL_VERSION,
+        localTokenFile: local,
+        publicStatus,
+        hint: limited
+          ? "Public status is rate limited. Doctor did not send the bridge token. Wait and retry. Do not arm."
+          : "The listener refused public status. Doctor did not send the bridge token. Do not arm."
+      });
+    }
   }
-  try {
-    const remote = await request("/doctor");
-    assertProtocol(remote);
-    printJson({ ...remote, localTokenFile: local, publicStatus });
-  } catch (error) {
-    const staleHint = error.message && /Not found|stale|protocol/i.test(error.message)
-      ? "The bridge process is probably stale after a repo update. Restart it with: lsof -ti tcp:18474 | xargs -r kill && npm run bridge"
-      : "If publicStatus is healthy but token auth fails, restart the bridge so it reloads the current `.bridge-token`.";
-    printJson({
+
+  const listenerFingerprint = listenerFingerprintOf(publicStatus);
+  if (publicStatus && publicStatus.ok !== false && !listenerFingerprint) {
+    failDoctor({
       ok: false,
-      error: error.message,
+      code: "token_unverified",
+      error: "Listener did not publish a token fingerprint.",
       expectedBridgeVersion: BRIDGE_VERSION,
       expectedProtocolVersion: PROTOCOL_VERSION,
       localTokenFile: local,
       publicStatus,
-      hint: staleHint
+      hint: TOKEN_UNVERIFIED_HINT
     });
-    process.exit(1);
+  }
+
+  const early = classifyDoctorAuth({
+    localFingerprint: local.fingerprint,
+    listenerFingerprint
+  });
+  if (!early.ok) {
+    failDoctor({
+      ok: false,
+      code: early.code,
+      error: "Bridge token mismatch.",
+      expectedBridgeVersion: BRIDGE_VERSION,
+      expectedProtocolVersion: PROTOCOL_VERSION,
+      localTokenFile: local,
+      listenerFingerprint,
+      publicStatus,
+      hint: early.hint
+    });
+  }
+
+  try {
+    const remote = await request("/doctor");
+    assertProtocol(remote);
+    const tokenFile = remote.doctor && remote.doctor.tokenFile;
+    const verdict = classifyDoctorAuth({
+      localFingerprint: local.fingerprint,
+      listenerFingerprint: (tokenFile && tokenFile.fingerprint) || listenerFingerprint,
+      doctorStatus: 200,
+      matchesRunningBridge: tokenFile ? tokenFile.matchesRunningBridge : null
+    });
+    if (!verdict.ok) {
+      failDoctor({
+        ok: false,
+        code: verdict.code,
+        error: "Bridge token does not match the running process.",
+        ...remote,
+        localTokenFile: local,
+        listenerFingerprint,
+        publicStatus,
+        hint: verdict.hint
+      });
+    }
+    printJson({ ...remote, localTokenFile: local, publicStatus, code: "match" });
+  } catch (error) {
+    const verdict = classifyDoctorAuth({
+      localFingerprint: local.fingerprint,
+      listenerFingerprint,
+      doctorStatus: error.status || null
+    });
+    const stale = error.message && /Not found|stale|protocol/i.test(error.message);
+    const unreachable = !error.status && !stale;
+    const hint = stale
+      ? "The bridge process is probably stale after a repo update. Restart it with: lsof -ti tcp:18474 | xargs -r kill && npm run bridge"
+      : unreachable
+        ? "The bridge is not reachable on 127.0.0.1:18474. Start `npm run bridge`. Do not arm."
+        : verdict.hint;
+    failDoctor({
+      ok: false,
+      code: stale ? "stale_bridge" : unreachable ? "bridge_unreachable" : verdict.code,
+      error: error.message,
+      expectedBridgeVersion: BRIDGE_VERSION,
+      expectedProtocolVersion: PROTOCOL_VERSION,
+      localTokenFile: local,
+      listenerFingerprint,
+      publicStatus,
+      hint
+    });
   }
 }
 
