@@ -1,0 +1,177 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agent Chrome Bridge by makriman - Give your AI agents your Chrome</title>
+<meta name="description" content="Agent Chrome Bridge by makriman: a local Chrome extension plus a Node bridge on 127.0.0.1 that lets Grok Bot and other agents drive one Chrome tab you arm. No cookie export, no remote relay. Open source, MIT.">
+<meta name="author" content="makriman">
+<meta name="robots" content="index,follow">
+<link rel="canonical" href="https://bridge.greatindiancompany.com/">
+<link rel="icon" href="/favicon.svg" type="image/svg+xml">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="Agent Chrome Bridge">
+<meta property="og:title" content="Agent Chrome Bridge by makriman - Give your AI agents your Chrome">
+<meta property="og:description" content="A local Chrome extension and a loopback Node bridge. You sign in, arm one tab, and your agent drives only that tab. No cookie export.">
+<meta property="og:url" content="https://bridge.greatindiancompany.com/">
+<meta property="og:image" content="https://bridge.greatindiancompany.com/og-image.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta property="og:image:alt" content="Agent Chrome Bridge - Give Grok Bot and other agents your Chrome">
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="Agent Chrome Bridge by makriman - Give your AI agents your Chrome">
+<meta name="twitter:description" content="Local, user-armed Chrome control for Grok Bot and other agents. One armed tab, 127.0.0.1 only, no cookie export.">
+<meta name="twitter:image" content="https://bridge.greatindiancompany.com/og-image.png">
+<meta name="twitter:image:alt" content="Agent Chrome Bridge - Give Grok Bot and other agents your Chrome">
+<link rel="stylesheet" href="/styles.css">
+<script type="application/ld+json">
+{
+  "@context": "https://schema.org",
+  "@type": "SoftwareApplication",
+  "name": "Agent Chrome Bridge",
+  "alternateName": "Agent-Chrome-Bridge",
+  "softwareVersion": "0.1.0",
+  "url": "https://bridge.greatindiancompany.com/",
+  "description": "A local Chrome extension plus a Node bridge on 127.0.0.1 that lets AI agents such as Grok Bot drive one Chrome tab the user explicitly arms. No cookie export and no remote relay.",
+  "applicationCategory": "DeveloperApplication",
+  "operatingSystem": "Any system that runs Google Chrome and Node.js",
+  "license": "https://opensource.org/licenses/MIT",
+  "isAccessibleForFree": true,
+  "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+  "codeRepository": "https://github.com/makriman/Agent-Chrome-Bridge",
+  "sameAs": ["https://github.com/makriman/Agent-Chrome-Bridge"],
+  "author": {
+    "@type": "Person",
+    "name": "makriman",
+    "alternateName": "Ramakrishnan Lokanathan",
+    "url": "https://github.com/makriman"
+  }
+}
+</script>
+</head>
+<body>
+<a class="skip" href="#top">Skip to content</a>
+<header>
+  <nav class="nav" aria-label="Primary">
+    <strong>Agent Chrome Bridge</strong>
+    <ul>
+      <li><a href="#quick-start">Quick start</a></li>
+      <li><a href="#how-it-works">How it works</a></li>
+      <li><a href="#use-cases">Use cases</a></li>
+      <li><a href="#security">Security</a></li>
+      <li><a href="#faq">FAQ</a></li>
+      <li><a href="https://github.com/makriman/Agent-Chrome-Bridge">GitHub</a></li>
+    </ul>
+  </nav>
+</header>
+<main>
+  <section class="hero" aria-labelledby="top">
+    <h1 id="top">Agent Chrome Bridge by makriman</h1>
+    <p class="tag">Give Grok Bot and other agents your Chrome.</p>
+    <p>Agent Chrome Bridge is an open-source Chrome extension plus a small Node bridge that listens only on <code>127.0.0.1:18474</code>. You sign in to a site in your normal Chrome, click <strong>Arm tab</strong>, and your agent can inspect and operate that one tab. Your session stays in your browser. Cookies are never exported.</p>
+    <p>
+      <a class="btn" href="#quick-start">Quick start</a>
+      <a class="btn secondary" href="https://github.com/makriman/Agent-Chrome-Bridge">View on GitHub</a>
+    </p>
+  </section>
+
+  <section id="why" aria-labelledby="why-h">
+    <h2 id="why-h">Cloud Chrome is not your Chrome</h2>
+    <p>Agents that run in datacenters, CI, or hosted browser farms often hit Cloudflare "Verify you are human", "Access denied", or other bot-score walls that your own signed-in Chrome tab already passed. Exporting cookies or standing up a remote relay hands your session to someone else. Agent Chrome Bridge takes the other route: the agent works inside the tab you armed, on your machine, through a loopback control plane.</p>
+  </section>
+
+  <section id="quick-start" aria-labelledby="qs-h">
+    <h2 id="qs-h">Install and quick start</h2>
+    <p>You need Google Chrome, Node.js, and a local checkout of the repository.</p>
+    <ol>
+      <li>Clone and start the bridge:
+<pre><code>git clone https://github.com/makriman/Agent-Chrome-Bridge.git
+cd Agent-Chrome-Bridge
+npm install
+npm run bridge</code></pre>
+      </li>
+      <li>Open <code>chrome://extensions</code>, turn on <strong>Developer mode</strong>, click <strong>Load unpacked</strong>, and choose the repository's <code>extension/</code> folder.</li>
+      <li>Open the site you want the agent to work on and sign in as you normally would.</li>
+      <li>Click the Agent Chrome Bridge toolbar icon, then <strong>Arm tab</strong>. That arms the active tab for 30 minutes.</li>
+      <li>Check the connection from the repo folder:
+<pre><code>node bridge/control.mjs doctor
+node bridge/control.mjs status</code></pre>
+      </li>
+      <li>Let your agent drive the armed tab, for example:
+<pre><code>node bridge/control.mjs inspect 120
+node bridge/control.mjs click-ref ref_abc123
+node bridge/control.mjs screenshot artifacts/current.png</code></pre>
+      </li>
+    </ol>
+    <p>After any bridge restart, arm the tab again. Full command reference and workflow runner docs are in the <a href="https://github.com/makriman/Agent-Chrome-Bridge#readme">README</a> and <a href="https://github.com/makriman/Agent-Chrome-Bridge/blob/main/SKILL.md">SKILL.md</a>.</p>
+  </section>
+
+  <section id="how-it-works" aria-labelledby="how-h">
+    <h2 id="how-h">How it works</h2>
+    <ol>
+      <li><strong>Arm one tab.</strong> You arm the active http or https tab from the popup. Agent commands run only on that tab. The arm lasts 30 minutes. The popup <strong>Stop</strong> button disarms it, and so does <code>node bridge/control.mjs stop</code>. An agent cannot arm a tab. After a bridge restart, arm the tab again.</li>
+      <li><strong>Localhost bridge.</strong> A Node server binds to <code>127.0.0.1:18474</code> only. It queues commands from the CLI (<code>bridge/control.mjs</code>) or the JavaScript SDK (<code>bridge/sdk.mjs</code>) and the extension polls that loopback address. Control requests carry a local token kept in a file on your machine. There is no remote relay in this repository.</li>
+      <li><strong>No cookie export.</strong> The project does not read or export cookies or passwords. <code>inspect</code> omits the value of inputs whose type, name, id, autocomplete, label, or placeholder looks like a password, email, phone, card, OTP, token, or similar secret. Reported URLs keep the origin and path, and drop the query string and fragment.</li>
+      <li><strong>Inspect, act, verify.</strong> <code>inspect</code> returns visible interactive elements with refs. Use <code>click-ref</code>, <code>fill-ref</code>, <code>type</code>, <code>key</code>, <code>nav</code>, <code>scroll</code>, and <code>screenshot</code>. Repeatable jobs can run through <code>bridge/run-workflow.mjs</code> with <code>--dry-run</code>, <code>--resume</code>, and approval gates the workflow asks for before a final action.</li>
+    </ol>
+    <p>Chrome may show its debugger banner while commands run. That is expected.</p>
+  </section>
+
+  <section id="use-cases" aria-labelledby="uc-h">
+    <h2 id="uc-h">Use cases</h2>
+    <ul>
+      <li><strong>Cloudflare-gated pages.</strong> When a datacenter, CI, or hosted browser is stopped by "Verify you are human" or "Access denied", and your own signed-in Chrome is not.</li>
+      <li><strong>SSO and other sign-in walls.</strong> You complete sign-in, including any multi-factor prompt, in your normal Chrome profile. The agent then works in the tab you armed. The documented path is that you sign in yourself. The project does not export that session.</li>
+      <li><strong>Partner portals and admin consoles.</strong> Pages a datacenter browser cannot pass. Shopify Partners is the documented proof point for that class of gate, not the product.</li>
+      <li><strong>Draft, then approve.</strong> A workflow can prepare a form or reply and stop on an approval gate before the final submit. See the support-reply example in the repository.</li>
+    </ul>
+    <p class="note">Proof point, not the product: the repository's cookbook documents working Shopify Partners pages through an armed tab, a class of site that blocked datacenter Chrome. See <a href="https://github.com/makriman/Agent-Chrome-Bridge/blob/main/docs/partners-cookbook.md">docs/partners-cookbook.md</a>.</p>
+  </section>
+
+  <section id="security" aria-labelledby="sec-h">
+    <h2 id="sec-h">Security model</h2>
+    <ul>
+      <li><strong>Loopback only.</strong> The bridge binds to <code>127.0.0.1</code>. There is no remote relay in this repository.</li>
+      <li><strong>You arm it.</strong> An agent cannot arm a tab. Only http and https tabs can be armed, and one tab is armed at a time. Arming a different tab replaces the previous arm. Closing the armed tab disarms it.</li>
+      <li><strong>No credential export.</strong> The project does not export cookies, passwords, or session tokens. Keep the local bridge token file private. Do not paste it into chat or commit it.</li>
+      <li><strong>Redaction by default.</strong> Inspection omits values of password, email, phone, card, OTP, token, and similar fields, and reports URLs as origin plus path.</li>
+      <li><strong>Final actions can wait for you.</strong> A workflow can call an approval gate before sending, purchasing, deleting, or changing settings. That gate is something the workflow asks for. The bridge does not silently classify every click.</li>
+      <li><strong>Broad browser permissions.</strong> The extension requests <code>activeTab</code>, <code>debugger</code>, <code>scripting</code>, <code>storage</code>, and <code>tabs</code>, plus host access to all URLs so it can drive the armed tab. A content script is declared for http and https pages. Commands run only while a tab is armed, and only on that tab. Load the extension only from a checkout you trust.</li>
+    </ul>
+    <p>The current version is 0.1.0. Open work is listed in the <a href="https://github.com/makriman/Agent-Chrome-Bridge/blob/main/docs/ROADMAP.md">roadmap</a>. To report a vulnerability, follow <a href="https://github.com/makriman/Agent-Chrome-Bridge/blob/main/SECURITY.md">SECURITY.md</a> and do not open a public issue.</p>
+  </section>
+
+  <section id="not-to-be-confused" aria-labelledby="ntbc-h">
+    <h2 id="ntbc-h">Not to be confused with</h2>
+    <p>There is a different project with a similar name: <a href="https://github.com/MichaelZelbel/chrome-agent-bridge">MichaelZelbel/chrome-agent-bridge</a>. Both let an agent use a logged-in Chrome. They are built differently. The comparison below is taken from each project's public README.</p>
+    <div class="table-wrap">
+    <table>
+      <thead><tr><th scope="col"></th><th scope="col">Agent Chrome Bridge (this project)</th><th scope="col">MichaelZelbel/chrome-agent-bridge</th></tr></thead>
+      <tbody>
+        <tr><th scope="row">Shape</th><td>Chrome extension plus a Node bridge bound to <code>127.0.0.1:18474</code>. No remote relay in this repository.</td><td>HTTP gateway (Express and Playwright). Default bind is <code>0.0.0.0</code> port <code>3007</code>. Their README says Chrome's debugging port stays on <code>127.0.0.1</code>, and the gateway is the network surface.</td></tr>
+        <tr><th scope="row">Which Chrome</th><td>A tab in your own Chrome, which you explicitly arm. One tab at a time.</td><td>A dedicated Chrome window with its own persistent profile, launched by that project. Their README says to use that profile rather than a daily personal browser.</td></tr>
+        <tr><th scope="row">Where the agent runs</th><td>On the same machine, via the local CLI or SDK, talking to <code>127.0.0.1</code>.</td><td>Their README describes a remote agent, for example on a VPS, reaching the gateway over a private network such as Tailscale.</td></tr>
+        <tr><th scope="row">MCP</th><td>No MCP server in this repository. Drive it with <code>bridge/control.mjs</code> or <code>bridge/sdk.mjs</code>.</td><td>Ships an optional MCP server in addition to the HTTP API.</td></tr>
+      </tbody>
+    </table>
+    </div>
+    <p>Pick the one that matches your setup. If you want an agent to work in the Chrome you already use, one armed tab at a time, on localhost, that is this project.</p>
+  </section>
+
+  <section id="faq" aria-labelledby="faq-h">
+    <h2 id="faq-h">FAQ</h2>
+    <details><summary>Does it export my cookies?</summary><p>No. The repository does not read or export cookies. Authentication stays in your Chrome profile. The agent operates the tab you armed.</p></details>
+    <details><summary>Does it send my browsing data to a cloud service?</summary><p>No. The bridge binds to 127.0.0.1. This repository has no remote relay.</p></details>
+    <details><summary>Can the agent use all my tabs?</summary><p>No. One tab is armed at a time, and you choose it by arming the active tab. The arm lasts 30 minutes. You can disarm it from the popup Stop button or with <code>node bridge/control.mjs stop</code>.</p></details>
+    <details><summary>Is there an MCP server?</summary><p>No. This repository has no MCP server. You drive the bridge with the CLI (<code>bridge/control.mjs</code>) or the JavaScript SDK (<code>bridge/sdk.mjs</code>).</p></details>
+    <details><summary>Which agents work with it?</summary><p>It was built for Grok Bot. Any agent that can run local shell commands or Node on the machine where Chrome is running can use the same CLI or SDK.</p></details>
+    <details><summary>Is it on the Chrome Web Store?</summary><p>The repository documents loading the unpacked <code>extension/</code> folder from <code>chrome://extensions</code>. It does not ship a Web Store package.</p></details>
+    <details><summary>Why is it named codex-chrome-bridge in some places?</summary><p>That was the earlier name. The repository is now <code>makriman/Agent-Chrome-Bridge</code>. The npm package name, an auth header, and some environment variables keep the old name for compatibility.</p></details>
+    <details><summary>What license is it under?</summary><p>MIT. Copyright 2026 Ramakrishnan Lokanathan. See the <a href="https://github.com/makriman/Agent-Chrome-Bridge/blob/main/LICENSE">LICENSE</a> file.</p></details>
+  </section>
+</main>
+<footer>
+  <p>Agent Chrome Bridge by <a href="https://github.com/makriman">makriman</a> (Ramakrishnan Lokanathan). MIT licensed. Source: <a href="https://github.com/makriman/Agent-Chrome-Bridge">github.com/makriman/Agent-Chrome-Bridge</a>. Not affiliated with MichaelZelbel/chrome-agent-bridge.</p>
+</footer>
+</body>
+</html>
