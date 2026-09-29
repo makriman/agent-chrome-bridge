@@ -1,10 +1,14 @@
-# Agent Chrome Bridge
+# Agent Chrome Bridge by makriman
 
 **Give Grok Bot and other agents your Chrome.**
 
-Local-only, user-armed Chrome control. Your session stays in your browser. Agents get the tab you arm — not a datacenter Chrome that Cloudflare already blocked.
+Agent Chrome Bridge is an open-source, local-only Chrome extension plus a Node bridge on `127.0.0.1` that lets an AI agent drive the one Chrome tab you arm. Your session stays in your browser. No cookie export, no remote relay. Agents get the tab you arm, not a datacenter Chrome that Cloudflare already blocked.
 
-Canonical repository: [github.com/makriman/Agent-Chrome-Bridge](https://github.com/makriman/Agent-Chrome-Bridge).
+**Website:** [bridge.greatindiancompany.com](https://bridge.greatindiancompany.com/) · **Source:** [github.com/makriman/Agent-Chrome-Bridge](https://github.com/makriman/Agent-Chrome-Bridge)
+
+> **Not to be confused with** [MichaelZelbel/chrome-agent-bridge](https://github.com/MichaelZelbel/chrome-agent-bridge), a separate project: an HTTP gateway that exposes a dedicated Chrome window to remote agents over a private network such as Tailscale. Agent Chrome Bridge is different: a localhost bridge plus a Chrome extension that drives your own already-logged-in Chrome tab, which you explicitly arm. The two projects are unrelated.
+
+**Keywords:** Chrome extension, AI agent browser control, Grok Bot, Cloudflare verify you are human, logged-in Chrome, localhost bridge, Manifest V3, Chrome DevTools Protocol, browser automation, no cookie export.
 
 ## Mission
 
